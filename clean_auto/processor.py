@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .api_client import ApiClient, build_user_message
+from pathlib import Path
+
+from .api_client import (
+    ApiClient,
+    build_user_message,
+)
 from .assembly import assemble_completed_file
 from .chunking import (
     build_expected_metadata,
@@ -21,7 +26,10 @@ from .config import (
     compact_error,
     sha256_text,
 )
-from .control import controlled_sleep, wait_if_paused
+from .control import (
+    controlled_sleep,
+    wait_if_paused,
+)
 from .quality import assess_quality
 from .validation import (
     remove_outer_code_fence,
@@ -29,9 +37,44 @@ from .validation import (
 )
 
 
+def safe_log_path(
+    path: Path,
+    base_dir: Path,
+) -> str:
+    """
+    将文件路径转换为相对于项目根目录的日志路径。
+
+    这样日志不会记录：
+
+    D:\\Apps\\Rag-cleaner\\output\\...
+
+    而是记录：
+
+    output/...
+
+    如果路径不在项目目录内，只记录文件名，
+    不泄露本机绝对目录。
+    """
+    try:
+        resolved_path = path.resolve()
+        resolved_base = base_dir.resolve()
+
+        return (
+            resolved_path
+            .relative_to(resolved_base)
+            .as_posix()
+        )
+
+    except (
+        OSError,
+        ValueError,
+    ):
+        return path.name
+
+
 def remove_incomplete_output(
-    output_path,
-    metadata_path,
+    output_path: Path,
+    metadata_path: Path,
 ) -> None:
     """
     清理没有完整提交的分片结果。
@@ -52,25 +95,28 @@ def remove_incomplete_output(
 
 
 def save_chunk_result(
-    output_path,
-    metadata_path,
+    output_path: Path,
+    metadata_path: Path,
     result: str,
     metadata: dict,
 ) -> None:
     """
     保存分片结果和 metadata。
 
-    如果其中任一步失败，删除本次不完整结果。
+    如果任一步失败，删除本次不完整结果，
+    防止留下看似已经完成的输出。
     """
     try:
         atomic_write_text(
             output_path,
             result.rstrip() + "\n",
         )
+
         atomic_write_json(
             metadata_path,
             metadata,
         )
+
     except Exception:
         remove_incomplete_output(
             output_path,
@@ -227,6 +273,10 @@ def process_file(
                 request_result.text
             )
 
+            # ------------------------------------------------
+            # 基础格式校验
+            # ------------------------------------------------
+
             errors, validation_warnings = (
                 validate_result(
                     result=result,
@@ -243,6 +293,10 @@ def process_file(
                     "输出校验失败："
                     + "；".join(errors)
                 )
+
+            # ------------------------------------------------
+            # 教材内容质量检查
+            # ------------------------------------------------
 
             quality = assess_quality(
                 input_text=chunk,
@@ -264,6 +318,10 @@ def process_file(
                 )
             )
 
+            # ------------------------------------------------
+            # 构建 metadata
+            # ------------------------------------------------
+
             metadata = build_output_metadata(
                 expected=expected,
                 result=result,
@@ -278,6 +336,10 @@ def process_file(
                 quality.to_dict()
             )
 
+            # ------------------------------------------------
+            # 保存分片
+            # ------------------------------------------------
+
             save_chunk_result(
                 output_path=output_path,
                 metadata_path=metadata_path,
@@ -291,6 +353,12 @@ def process_file(
                 )
             except OSError:
                 pass
+
+            # ------------------------------------------------
+            # 日志
+            #
+            # 只记录相对于项目根目录的路径。
+            # ------------------------------------------------
 
             append_log(
                 config.log_dir,
@@ -316,7 +384,14 @@ def process_file(
                         request_result.elapsed_seconds,
                         1,
                     ),
-                    "output": str(output_path),
+                    "output": safe_log_path(
+                        output_path,
+                        config.base_dir,
+                    ),
+                    "metadata": safe_log_path(
+                        metadata_path,
+                        config.base_dir,
+                    ),
                     "warnings": warnings,
                 },
             )
@@ -360,6 +435,15 @@ def process_file(
             stats.failed_parts += 1
             consecutive_failures += 1
 
+            partial_log_path = (
+                safe_log_path(
+                    partial_path,
+                    config.base_dir,
+                )
+                if partial_path.exists()
+                else None
+            )
+
             append_log(
                 config.log_dir,
                 plan.relative_path.as_posix(),
@@ -373,11 +457,7 @@ def process_file(
                     "consecutive_failures": (
                         consecutive_failures
                     ),
-                    "partial": (
-                        str(partial_path)
-                        if partial_path.exists()
-                        else None
-                    ),
+                    "partial": partial_log_path,
                 },
             )
 
@@ -422,13 +502,17 @@ def process_file(
     if config.dry_run:
         return ProcessOutcome(
             stats=stats,
-            consecutive_failures=consecutive_failures,
+            consecutive_failures=(
+                consecutive_failures
+            ),
         )
 
-    # 只有所有分片都成功或已验证跳过时，才生成完整文件。
+    # 只有所有分片均成功或验证为已完成时，
+    # 才生成完整文件。
     if (
         stats.failed_parts == 0
-        and stats.success_parts == stats.total_parts
+        and stats.success_parts
+        == stats.total_parts
     ):
         try:
             final_path, _ = (
@@ -439,7 +523,7 @@ def process_file(
             )
 
             print(
-                f"[合并] 已生成完整文件："
+                "[合并] 已生成完整文件："
                 f"{final_path}"
             )
 
@@ -452,6 +536,10 @@ def process_file(
                 "assembly_failed",
                 {
                     "error": compact_error(exc),
+                    "output_dir": safe_log_path(
+                        plan.output_dir,
+                        config.base_dir,
+                    ),
                 },
             )
 
@@ -463,5 +551,7 @@ def process_file(
 
     return ProcessOutcome(
         stats=stats,
-        consecutive_failures=consecutive_failures,
+        consecutive_failures=(
+            consecutive_failures
+        ),
     )
