@@ -3,57 +3,50 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 
+from .quality_settings import load_quality_thresholds
 
-# ============================================================
-# 检测规则
-# ============================================================
 
-# 这里只检测“比较明确”的广告或引流表达。
-#
-# 注意：
-# - 检测到后只会标记为需要人工复核；
-# - 不会由程序直接删除；
-# - 最终是否删除仍由模型和人工检查决定。
 AD_PATTERNS = (
     re.compile(
         r"扫码.{0,20}(?:关注|领取|添加|下载|购买|报名)",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:关注|添加).{0,12}(?:公众号|微信|客服|老师|助教)",
+        r"(?:关注|添加).{0,12}"
+        r"(?:公众号|微信|客服|老师|助教)",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:免费|限时).{0,20}(?:领取|课程|资料|优惠|下载)",
+        r"(?:免费|限时).{0,20}"
+        r"(?:领取|课程|资料|优惠|下载)",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:购买|报名|咨询).{0,15}(?:课程|网课|客服|老师|助教)",
+        r"(?:购买|报名|咨询).{0,15}"
+        r"(?:课程|网课|客服|老师|助教)",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:微信号|客服微信|老师微信|助教微信)\s*[:：]",
+        r"(?:微信号|客服微信|老师微信|助教微信)"
+        r"\s*[:：]",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:加群|入群|进群).{0,15}(?:学习|领取|资料|交流)?",
+        r"(?:加群|入群|进群).{0,15}"
+        r"(?:学习|领取|资料|交流)?",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:淘宝|拼多多|闲鱼|抖音|快手|小红书).{0,20}"
-        r"(?:购买|店铺|搜索|关注)",
+        r"(?:淘宝|拼多多|闲鱼|抖音|快手|小红书)"
+        r".{0,20}(?:购买|店铺|搜索|关注)",
         re.IGNORECASE,
     ),
 )
 
-# Markdown 标题。
 HEADING_PATTERN = re.compile(
     r"(?m)^#{1,6}[ \t]+\S+"
 )
 
-# 常见题目格式。
-#
-# 这不是严格题目识别，只用于比较清洗前后的数量变化。
 QUESTION_PATTERN = re.compile(
     r"(?m)^[ \t]*(?:"
     r"第[ \t]*\d+[ \t]*题"
@@ -61,24 +54,17 @@ QUESTION_PATTERN = re.compile(
     r")"
 )
 
-# 数字、年份、小数和百分比。
-#
-# 用于发现教材中的法条编号、年份、题目数字等是否大量减少。
 NUMBER_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"\d+(?:\.\d+)?%?"
     r"(?![A-Za-z0-9_])"
 )
 
-# HTTP/HTTPS URL。
 URL_PATTERN = re.compile(
     r"https?://[^\s<>()\[\]\"']+",
     re.IGNORECASE,
 )
 
-# Markdown 表格分隔行，例如：
-#
-# | --- | --- |
 TABLE_SEPARATOR_PATTERN = re.compile(
     r"(?m)^[ \t]*\|?"
     r"[ \t]*:?-{3,}:?[ \t]*"
@@ -86,10 +72,6 @@ TABLE_SEPARATOR_PATTERN = re.compile(
     r"\|?[ \t]*$"
 )
 
-
-# ============================================================
-# 报告结构
-# ============================================================
 
 @dataclass
 class QualityReport:
@@ -126,15 +108,20 @@ class QualityReport:
         return asdict(self)
 
 
-# ============================================================
-# 基础工具
-# ============================================================
-
 def _count(
     pattern: re.Pattern[str],
     text: str,
 ) -> int:
     return len(pattern.findall(text))
+
+
+def _normalize_url(value: str) -> str:
+    """
+    用于比较 URL，避免只因尾部标点变化导致误报新增链接。
+    """
+    return value.rstrip(
+        ".,;:，。；：)]}）】》」』"
+    ).lower()
 
 
 def _unique_matches(
@@ -145,7 +132,7 @@ def _unique_matches(
     values: list[str] = []
 
     for match in pattern.finditer(text):
-        value = match.group(0).strip().rstrip(".,;，。；")
+        value = match.group(0).strip()
 
         if not value:
             continue
@@ -166,7 +153,7 @@ def find_ad_signals(
     """
     查找输出中仍然存在的疑似广告或引流文字。
 
-    结果只用于风险提示，不自动删除任何内容。
+    检测结果只用于复核提示，不自动删除内容。
     """
     signals: list[str] = []
 
@@ -174,7 +161,6 @@ def find_ad_signals(
         for match in pattern.finditer(text):
             value = match.group(0).strip()
 
-            # 防止 metadata 和日志中保存过长文本。
             if len(value) > 100:
                 value = value[:100] + "……"
 
@@ -192,57 +178,48 @@ def find_added_urls(
     output_text: str,
 ) -> list[str]:
     """
-    找出模型输出中新增加的 URL。
+    找出输出中新增的 URL。
 
-    原文已经存在的 URL 不视为新增。
+    URL 尾部标点变化不视为新增。
     """
-    input_urls = set(
-        _unique_matches(
+    input_urls = {
+        _normalize_url(value)
+        for value in _unique_matches(
             URL_PATTERN,
             input_text,
             limit=1000,
         )
-    )
+    }
 
-    output_urls = _unique_matches(
+    added_urls: list[str] = []
+
+    for value in _unique_matches(
         URL_PATTERN,
         output_text,
         limit=1000,
-    )
+    ):
+        if _normalize_url(value) in input_urls:
+            continue
 
-    return [
-        value
-        for value in output_urls
-        if value not in input_urls
-    ][:20]
+        added_urls.append(value)
 
+        if len(added_urls) >= 20:
+            break
 
-# ============================================================
-# 质量评估
-# ============================================================
+    return added_urls
+
 
 def assess_quality(
     input_text: str,
     output_text: str,
 ) -> QualityReport:
     """
-    比较模型输入和输出，识别可能发生的：
+    比较输入与输出，检测明显风险。
 
-    - 严重截断；
-    - 过度删除；
-    - 异常扩写；
-    - 标题大量减少；
-    - 题目大量减少；
-    - 数字大量减少；
-    - 表格大量丢失；
-    - 新增 URL；
-    - 广告残留。
-
-    普通问题进入 warnings，并标记 review_required。
-
-    非常严重的问题进入 severe_errors。
-    processor.py 会拒绝把严重异常结果保存为成功结果。
+    阈值从环境变量读取，未配置时使用项目默认值。
     """
+    thresholds = load_quality_thresholds()
+
     input_length = len(input_text)
     output_length = len(output_text)
 
@@ -315,93 +292,100 @@ def assess_quality(
     warnings: list[str] = []
     severe_errors: list[str] = []
 
-    # --------------------------------------------------------
-    # 内容长度
-    # --------------------------------------------------------
-
     if input_length >= 200:
-        if retained_ratio < 0.30:
+        if (
+            retained_ratio
+            < thresholds.severe_min_retained_ratio
+        ):
             severe_errors.append(
-                "输出不到输入的 30%，"
+                "输出保留比例低于严重阈值 "
+                f"{thresholds.severe_min_retained_ratio:.0%}，"
                 "疑似发生严重截断或正文被过度删除"
             )
-        elif retained_ratio < 0.50:
+
+        elif (
+            retained_ratio
+            < thresholds.warning_min_retained_ratio
+        ):
             warnings.append(
-                "输出不到输入的 50%，"
+                "输出保留比例低于警告阈值 "
+                f"{thresholds.warning_min_retained_ratio:.0%}，"
                 "可能删除了过多正文"
             )
-        elif retained_ratio < 0.70:
+
+        elif (
+            retained_ratio
+            < thresholds.review_min_retained_ratio
+        ):
             warnings.append(
-                "输出不到输入的 70%，"
+                "输出保留比例低于复核阈值 "
+                f"{thresholds.review_min_retained_ratio:.0%}，"
                 "建议人工检查删除内容"
             )
 
-        if expansion_ratio > 2.00:
+        if (
+            expansion_ratio
+            > thresholds.severe_max_expansion_ratio
+        ):
             severe_errors.append(
-                "输出超过输入的 200%，"
+                "输出扩写比例超过严重阈值 "
+                f"{thresholds.severe_max_expansion_ratio:.0%}，"
                 "模型可能生成了大量原文不存在的内容"
             )
-        elif expansion_ratio > 1.50:
+
+        elif (
+            expansion_ratio
+            > thresholds.warning_max_expansion_ratio
+        ):
             warnings.append(
-                "输出超过输入的 150%，"
+                "输出扩写比例超过复核阈值 "
+                f"{thresholds.warning_max_expansion_ratio:.0%}，"
                 "请检查模型是否扩写或补充内容"
             )
 
-    # --------------------------------------------------------
-    # 标题完整性
-    # --------------------------------------------------------
-
     if (
         input_headings >= 3
-        and output_headings < input_headings * 0.5
+        and output_headings
+        < input_headings
+        * thresholds.heading_retained_ratio
     ):
         warnings.append(
             "输出标题数量显著减少，"
             "请检查章节结构是否丢失"
         )
 
-    # --------------------------------------------------------
-    # 题目完整性
-    # --------------------------------------------------------
-
     if (
         input_questions >= 3
-        and output_questions < input_questions * 0.7
+        and output_questions
+        < input_questions
+        * thresholds.question_retained_ratio
     ):
         warnings.append(
             "输出题目数量显著减少，"
             "请检查题干、选项、答案和解析"
         )
 
-    # --------------------------------------------------------
-    # 数字完整性
-    # --------------------------------------------------------
-
     if (
         input_numbers >= 20
-        and output_numbers < input_numbers * 0.70
+        and output_numbers
+        < input_numbers
+        * thresholds.number_retained_ratio
     ):
         warnings.append(
             "输出数字数量显著减少，"
             "请检查年份、法条编号、题号、数值和单位"
         )
 
-    # --------------------------------------------------------
-    # 表格完整性
-    # --------------------------------------------------------
-
     if (
         input_tables >= 2
-        and output_tables < input_tables * 0.5
+        and output_tables
+        < input_tables
+        * thresholds.table_retained_ratio
     ):
         warnings.append(
             "输出表格数量显著减少，"
             "请检查 Markdown 表格是否丢失或损坏"
         )
-
-    # --------------------------------------------------------
-    # URL 和广告
-    # --------------------------------------------------------
 
     if added_urls:
         warnings.append(
