@@ -45,6 +45,30 @@ def build_final_paths(
     return final_path, metadata_path
 
 
+def remove_existing_final_output(
+    final_path: Path,
+    metadata_path: Path,
+) -> None:
+    """
+    删除旧的完整文件和 metadata。
+
+    这样可以避免新一轮合并失败时，
+    用户误用上一版本的完整文件。
+    """
+    for path in (
+        final_path,
+        metadata_path,
+    ):
+        try:
+            path.unlink(
+                missing_ok=True
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"无法删除旧的完整输出：{path}"
+            ) from exc
+
+
 def _remove_front_matter(
     text: str,
 ) -> str:
@@ -59,8 +83,8 @@ def _remove_front_matter(
 
     开头的内容。
 
-    如果 Front Matter 没有正确闭合，则保留原文，
-    不擅自删除内容。
+    如果 Front Matter 没有正确闭合，
+    则保留原文，不擅自删除内容。
     """
     stripped = text.lstrip(
         "\ufeff \t\r\n"
@@ -149,12 +173,13 @@ def assemble_completed_file(
     """
     验证所有分片后，合并生成完整 Markdown。
 
-    处理规则：
+    规则：
 
     - 任意分片未完成，直接失败；
     - 第一片保留原样；
     - 后续分片的重复 Front Matter 会被移除；
     - 合并结果会与完整源文件做质量比较；
+    - 新一轮合并开始前删除旧完整文件；
     - 严重质量异常时不生成最终文件；
     - 最终文件和 metadata 使用原子写入。
     """
@@ -166,9 +191,16 @@ def assemble_completed_file(
             f"{plan.relative_path}"
         )
 
+    final_path, final_metadata_path = (
+        build_final_paths(plan)
+    )
+
     part_texts: list[str] = []
     part_metadata: list[dict[str, Any]] = []
 
+    # 先完整验证所有分片。
+    # 在分片不完整时保留旧完整文件，避免误删；
+    # 一旦所有分片确认有效，旧完整文件才会被清理。
     for part_number, chunk in enumerate(
         plan.chunks,
         start=1,
@@ -241,8 +273,14 @@ def assemble_completed_file(
 
     final_text += "\n"
 
-    # 使用完整源文件，而不是某个分片，
-    # 检查合并后的整体内容是否异常减少。
+    # 所有分片都已确认有效。
+    # 现在旧完整文件已经不能代表当前这批分片，
+    # 因此先删除，避免质量失败后留下旧结果。
+    remove_existing_final_output(
+        final_path,
+        final_metadata_path,
+    )
+
     source_text = read_text(
         plan.source_path
     )
@@ -259,10 +297,6 @@ def assemble_completed_file(
                 quality.severe_errors
             )
         )
-
-    final_path, final_metadata_path = (
-        build_final_paths(plan)
-    )
 
     part_warnings = _collect_part_warnings(
         part_metadata
@@ -282,7 +316,7 @@ def assemble_completed_file(
     )
 
     final_metadata = {
-        "version": 3,
+        "version": 4,
         "source_file": (
             plan.relative_path.as_posix()
         ),
@@ -313,6 +347,7 @@ def assemble_completed_file(
         )
 
     except Exception:
+        # 防止只写入了其中一个文件。
         try:
             final_path.unlink(
                 missing_ok=True
