@@ -41,6 +41,8 @@ review/*
 *.partial.md
 *.partial.md.meta.json
 *.tmp
+*.backup
+
 
 # Windows and IDE
 Thumbs.db
