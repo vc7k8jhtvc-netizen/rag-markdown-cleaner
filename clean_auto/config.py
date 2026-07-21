@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import hashlib
@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
-MAX_CHARS = 28000
+MAX_CHARS = 12000
 DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024
 
 CONNECT_TIMEOUT = 30.0
