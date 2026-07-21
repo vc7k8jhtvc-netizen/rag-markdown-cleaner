@@ -19,12 +19,22 @@ from .config import (
     safe_name,
     sha256_text,
 )
+from .metadata_schema import (
+    FINAL_METADATA_SCHEMA,
+    FINAL_METADATA_SCHEMA_VERSION,
+    REVIEW_REPORT_SCHEMA,
+    REVIEW_REPORT_SCHEMA_VERSION,
+    add_schema_identity,
+)
 from .quality import assess_quality
 
 
 def build_final_paths(
     plan: FilePlan,
 ) -> tuple[Path, Path]:
+    """
+    返回完整清洗文件和完整文件 metadata 的路径。
+    """
     filename_stem = safe_name(
         plan.source_path.stem
     )
@@ -48,7 +58,14 @@ def _remove_front_matter(
     """
     删除后续分片开头重复的 YAML Front Matter。
 
-    Front Matter 不完整时不删除，避免误删正文。
+    只处理明确以以下结构开头的内容：
+
+    ---
+    ...
+    ---
+
+    Front Matter 没有正确闭合时保留原文，
+    避免误删教材正文。
     """
     stripped = text.lstrip(
         "\ufeff \t\r\n"
@@ -59,10 +76,16 @@ def _remove_front_matter(
 
     lines = stripped.splitlines()
 
-    if not lines or lines[0].strip() != "---":
+    if (
+        not lines
+        or lines[0].strip() != "---"
+    ):
         return text.strip()
 
-    for index in range(1, len(lines)):
+    for index in range(
+        1,
+        len(lines),
+    ):
         if lines[index].strip() == "---":
             return "\n".join(
                 lines[index + 1:]
@@ -74,6 +97,9 @@ def _remove_front_matter(
 def _read_part_metadata(
     metadata_path: Path,
 ) -> dict[str, Any]:
+    """
+    读取并检查分片 metadata。
+    """
     try:
         data = json.loads(
             read_text(metadata_path)
@@ -96,6 +122,9 @@ def _read_part_metadata(
 def _collect_part_warnings(
     part_metadata: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """
+    汇总所有分片的质量提示。
+    """
     warnings: list[dict[str, Any]] = []
 
     for metadata in part_metadata:
@@ -104,8 +133,13 @@ def _collect_part_warnings(
             [],
         )
 
-        if not isinstance(part_warnings, list):
-            part_warnings = [str(part_warnings)]
+        if not isinstance(
+            part_warnings,
+            list,
+        ):
+            part_warnings = [
+                str(part_warnings)
+            ]
 
         if part_warnings:
             warnings.append(
@@ -123,6 +157,9 @@ def _collect_part_warnings(
 def _read_existing_text(
     path: Path,
 ) -> str | None:
+    """
+    读取发布前的文件内容，用于失败回滚。
+    """
     if not path.is_file():
         return None
 
@@ -133,6 +170,11 @@ def _restore_file(
     path: Path,
     previous_text: str | None,
 ) -> None:
+    """
+    恢复文件到发布前状态。
+
+    原文件不存在时，删除本次产生的新文件。
+    """
     if previous_text is None:
         try:
             path.unlink(
@@ -156,18 +198,29 @@ def _publish_final_output(
     final_metadata: dict[str, Any],
 ) -> None:
     """
-    原子发布完整文件。
+    安全发布完整文件和 metadata。
 
-    写入失败时恢复发布前的完整文件与 metadata。
+    新结果在质量检查通过后才进入此函数。
+
+    如果写入失败，尽可能恢复发布前的完整文件
+    和 metadata，避免旧的可用结果丢失。
     """
     previous_final = _read_existing_text(
         final_path
     )
-    previous_metadata = _read_existing_text(
-        metadata_path
+
+    previous_metadata = (
+        _read_existing_text(
+            metadata_path
+        )
     )
 
     try:
+        # 先写 metadata，再写正文。
+        #
+        # 如果两个操作之间进程异常退出，
+        # metadata 与正文哈希会不一致，
+        # 下次运行会自动重新合并。
         atomic_write_json(
             metadata_path,
             final_metadata,
@@ -205,8 +258,11 @@ def _publish_final_output(
 
         if restore_errors:
             raise RuntimeError(
-                "发布完整文件失败，并且回滚不完整："
-                + "；".join(restore_errors)
+                "发布完整文件失败，"
+                "并且回滚不完整："
+                + "；".join(
+                    restore_errors
+                )
             ) from publish_error
 
         raise RuntimeError(
@@ -222,8 +278,8 @@ def _build_review_paths(
     """
     为需要人工复核的完整文件创建稳定路径。
 
-    review 目录会保持输入文件的子目录结构，
-    并使用路径哈希避免同名文件冲突。
+    保持输入文件的子目录结构，并通过路径哈希
+    避免不同目录中的同名文件发生冲突。
     """
     review_root = (
         config.base_dir
@@ -267,7 +323,10 @@ def _build_review_paths(
         / f"{filename_stem}_review.json"
     )
 
-    return review_document, review_report
+    return (
+        review_document,
+        review_report,
+    )
 
 
 def _remove_review_copy(
@@ -302,15 +361,21 @@ def sync_review_copy(
     """
     同步 review 目录。
 
-    - review_required=true：复制完整 Markdown 和复核报告；
-    - review_required=false：删除该文件旧复核副本；
-    - 返回复核 Markdown 路径，或 None。
+    review_required=true：
+
+    - 写入完整 Markdown 复核副本；
+    - 写入 JSON 复核报告。
+
+    review_required=false：
+
+    - 清理此前存在的旧复核副本。
     """
-    review_document, review_report = (
-        _build_review_paths(
-            plan,
-            config,
-        )
+    (
+        review_document,
+        review_report,
+    ) = _build_review_paths(
+        plan,
+        config,
     )
 
     review_required = bool(
@@ -325,6 +390,7 @@ def sync_review_copy(
             review_document,
             review_report,
         )
+
         return None
 
     try:
@@ -335,16 +401,28 @@ def sync_review_copy(
             )
             .as_posix()
         )
-    except ValueError:
-        relative_final_output = final_path.name
 
-    review_report_data = {
+    except (
+        OSError,
+        ValueError,
+    ):
+        relative_final_output = (
+            final_path.name
+        )
+
+    review_report_data: dict[
+        str,
+        Any,
+    ] = {
+        # 保留旧 version 字段，兼容已有报告。
         "version": 1,
         "status": "review_required",
         "source_file": (
             plan.relative_path.as_posix()
         ),
-        "final_output": relative_final_output,
+        "final_output": (
+            relative_final_output
+        ),
         "source_sha256": (
             final_metadata.get(
                 "source_sha256"
@@ -360,26 +438,57 @@ def sync_review_copy(
                 "output_chars"
             )
         ),
-        "quality": final_metadata.get(
-            "quality",
-            {},
+        "quality": (
+            final_metadata.get(
+                "quality",
+                {},
+            )
         ),
-        "part_warnings": final_metadata.get(
-            "part_warnings",
-            [],
+        "part_warnings": (
+            final_metadata.get(
+                "part_warnings",
+                [],
+            )
         ),
         "created_at": now_iso(),
     }
 
-    atomic_write_text(
-        review_document,
-        final_text,
+    add_schema_identity(
+        metadata=review_report_data,
+        schema=REVIEW_REPORT_SCHEMA,
+        schema_version=(
+            REVIEW_REPORT_SCHEMA_VERSION
+        ),
     )
 
-    atomic_write_json(
-        review_report,
-        review_report_data,
-    )
+    try:
+        atomic_write_text(
+            review_document,
+            final_text,
+        )
+
+        atomic_write_json(
+            review_report,
+            review_report_data,
+        )
+
+    except Exception:
+        # 复核副本必须成对存在。
+        try:
+            review_document.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
+
+        try:
+            review_report.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
+
+        raise
 
     return review_document
 
@@ -391,9 +500,20 @@ def assemble_completed_file(
     """
     验证分片、合并完整文件、检查质量并安全发布。
 
-    质量检查失败时不会删除旧完整文件。
+    处理规则：
+
+    - 任意分片未完成时不合并；
+    - 第一片完整保留；
+    - 后续分片重复 Front Matter 会被移除；
+    - 候选完整文件先在内存中生成；
+    - 候选文件先通过完整质量检查；
+    - 质量失败时保留此前完整文件；
+    - 所有检查通过后才发布新完整文件；
+    - 高风险结果同步到 review 目录。
     """
-    total_parts = len(plan.chunks)
+    total_parts = len(
+        plan.chunks
+    )
 
     if total_parts <= 0:
         raise RuntimeError(
@@ -401,14 +521,22 @@ def assemble_completed_file(
             f"{plan.relative_path}"
         )
 
-    final_path, final_metadata_path = (
-        build_final_paths(plan)
+    (
+        final_path,
+        final_metadata_path,
+    ) = build_final_paths(
+        plan
     )
 
     part_texts: list[str] = []
+
     part_metadata: list[
         dict[str, Any]
     ] = []
+
+    # --------------------------------------------------------
+    # 验证并读取全部分片
+    # --------------------------------------------------------
 
     for part_number, chunk in enumerate(
         plan.chunks,
@@ -426,9 +554,15 @@ def assemble_completed_file(
 
         expected = build_expected_metadata(
             relative_path=plan.relative_path,
-            source_sha256=plan.source_sha256,
-            chunk_sha256=sha256_text(chunk),
-            prompt_sha256=config.prompt_sha256,
+            source_sha256=(
+                plan.source_sha256
+            ),
+            chunk_sha256=sha256_text(
+                chunk
+            ),
+            prompt_sha256=(
+                config.prompt_sha256
+            ),
             model=config.model,
             base_url=config.base_url,
             part_number=part_number,
@@ -466,9 +600,17 @@ def assemble_completed_file(
             )
 
         if part_text:
-            part_texts.append(part_text)
+            part_texts.append(
+                part_text
+            )
 
-        part_metadata.append(metadata)
+        part_metadata.append(
+            metadata
+        )
+
+    # --------------------------------------------------------
+    # 生成候选完整文件
+    # --------------------------------------------------------
 
     final_text = "\n\n".join(
         part_texts
@@ -481,6 +623,12 @@ def assemble_completed_file(
         )
 
     final_text += "\n"
+
+    # --------------------------------------------------------
+    # 完整文件质量检查
+    #
+    # 此处尚未修改旧完整文件。
+    # --------------------------------------------------------
 
     source_text = read_text(
         plan.source_path
@@ -500,8 +648,10 @@ def assemble_completed_file(
             + "。旧完整文件已保留。"
         )
 
-    part_warnings = _collect_part_warnings(
-        part_metadata
+    part_warnings = (
+        _collect_part_warnings(
+            part_metadata
+        )
     )
 
     review_required = (
@@ -517,7 +667,15 @@ def assemble_completed_file(
         )
     )
 
-    final_metadata = {
+    # --------------------------------------------------------
+    # 构造完整文件 metadata
+    # --------------------------------------------------------
+
+    final_metadata: dict[
+        str,
+        Any,
+    ] = {
+        # 保留旧 version 字段，兼容已有结果。
         "version": 6,
         "status": "completed",
         "source_file": (
@@ -544,16 +702,40 @@ def assemble_completed_file(
             review_required
         ),
         "quality": quality.to_dict(),
-        "part_warnings": part_warnings,
+        "part_warnings": (
+            part_warnings
+        ),
         "completed_at": now_iso(),
     }
 
+    add_schema_identity(
+        metadata=final_metadata,
+        schema=FINAL_METADATA_SCHEMA,
+        schema_version=(
+            FINAL_METADATA_SCHEMA_VERSION
+        ),
+    )
+
+    # --------------------------------------------------------
+    # 所有检查通过后安全发布。
+    # --------------------------------------------------------
+
     _publish_final_output(
         final_path=final_path,
-        metadata_path=final_metadata_path,
+        metadata_path=(
+            final_metadata_path
+        ),
         final_text=final_text,
-        final_metadata=final_metadata,
+        final_metadata=(
+            final_metadata
+        ),
     )
+
+    # --------------------------------------------------------
+    # 同步人工复核副本。
+    #
+    # 复核副本失败不会影响正式完整文件。
+    # --------------------------------------------------------
 
     try:
         review_path = sync_review_copy(
@@ -561,7 +743,9 @@ def assemble_completed_file(
             config=config,
             final_path=final_path,
             final_text=final_text,
-            final_metadata=final_metadata,
+            final_metadata=(
+                final_metadata
+            ),
         )
 
         if review_path is not None:
