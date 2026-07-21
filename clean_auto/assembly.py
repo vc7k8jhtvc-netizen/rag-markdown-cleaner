@@ -45,46 +45,20 @@ def build_final_paths(
     return final_path, metadata_path
 
 
-def remove_existing_final_output(
-    final_path: Path,
-    metadata_path: Path,
-) -> None:
-    """
-    删除旧的完整文件和 metadata。
-
-    这样可以避免新一轮合并失败时，
-    用户误用上一版本的完整文件。
-    """
-    for path in (
-        final_path,
-        metadata_path,
-    ):
-        try:
-            path.unlink(
-                missing_ok=True
-            )
-        except OSError as exc:
-            raise RuntimeError(
-                f"无法删除旧的完整输出：{path}"
-            ) from exc
-
-
 def _remove_front_matter(
     text: str,
 ) -> str:
     """
     删除后续分片开头重复的 YAML Front Matter。
 
-    只处理明确以：
+    只处理明确以以下结构开头的内容：
 
     ---
     ...
     ---
 
-    开头的内容。
-
     如果 Front Matter 没有正确闭合，
-    则保留原文，不擅自删除内容。
+    则保留原文，不擅自删除。
     """
     stripped = text.lstrip(
         "\ufeff \t\r\n"
@@ -101,33 +75,42 @@ def _remove_front_matter(
     if lines[0].strip() != "---":
         return text.strip()
 
-    for index in range(1, len(lines)):
+    for index in range(
+        1,
+        len(lines),
+    ):
         if lines[index].strip() == "---":
-            remaining = lines[index + 1:]
+            remaining = lines[
+                index + 1:
+            ]
 
             return "\n".join(
                 remaining
             ).strip()
 
+    # YAML 没有闭合时不删除任何内容。
     return text.strip()
 
 
 def _read_part_metadata(
     metadata_path: Path,
 ) -> dict[str, Any]:
+    """
+    读取并检查分片 metadata。
+    """
     try:
         data = json.loads(
             read_text(metadata_path)
         )
     except Exception as exc:
         raise RuntimeError(
-            f"无法读取分片 metadata："
+            "无法读取分片 metadata："
             f"{metadata_path}"
         ) from exc
 
     if not isinstance(data, dict):
         raise RuntimeError(
-            f"分片 metadata 不是对象："
+            "分片 metadata 不是对象："
             f"{metadata_path}"
         )
 
@@ -137,6 +120,9 @@ def _read_part_metadata(
 def _collect_part_warnings(
     part_metadata: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """
+    汇总所有分片的质量提示。
+    """
     warnings: list[dict[str, Any]] = []
 
     for metadata in part_metadata:
@@ -166,6 +152,125 @@ def _collect_part_warnings(
     return warnings
 
 
+def _read_existing_text(
+    path: Path,
+) -> str | None:
+    """
+    读取已有文件，用于发布失败时恢复旧版本。
+
+    文件不存在时返回 None。
+    """
+    if not path.is_file():
+        return None
+
+    return read_text(path)
+
+
+def _restore_file(
+    path: Path,
+    previous_text: str | None,
+) -> None:
+    """
+    恢复发布前的文件状态。
+
+    - 原文件存在：恢复原内容；
+    - 原文件不存在：删除本次产生的新文件。
+    """
+    if previous_text is None:
+        try:
+            path.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
+
+        return
+
+    atomic_write_text(
+        path,
+        previous_text,
+    )
+
+
+def _publish_final_output(
+    final_path: Path,
+    metadata_path: Path,
+    final_text: str,
+    final_metadata: dict[str, Any],
+) -> None:
+    """
+    安全发布完整文件和 metadata。
+
+    发布顺序：
+
+    1. 保存旧文件内容；
+    2. 原子写入新 metadata；
+    3. 原子替换新完整文件；
+    4. 任意步骤失败时恢复旧版本。
+
+    metadata 先写、正文后写的原因：
+
+    如果程序在两个替换步骤之间突然退出，
+    旧完整正文仍然保留，不会先丢失用户可阅读的旧稿。
+
+    此时 metadata 与正文哈希不匹配，
+    下次运行会自动重新合并。
+    """
+    previous_final = _read_existing_text(
+        final_path
+    )
+    previous_metadata = _read_existing_text(
+        metadata_path
+    )
+
+    try:
+        atomic_write_json(
+            metadata_path,
+            final_metadata,
+        )
+
+        atomic_write_text(
+            final_path,
+            final_text,
+        )
+
+    except Exception as publish_error:
+        restore_errors: list[str] = []
+
+        try:
+            _restore_file(
+                final_path,
+                previous_final,
+            )
+        except Exception as exc:
+            restore_errors.append(
+                "恢复旧完整文件失败："
+                f"{exc}"
+            )
+
+        try:
+            _restore_file(
+                metadata_path,
+                previous_metadata,
+            )
+        except Exception as exc:
+            restore_errors.append(
+                "恢复旧 metadata 失败："
+                f"{exc}"
+            )
+
+        if restore_errors:
+            raise RuntimeError(
+                "发布完整文件失败，并且回滚不完整："
+                + "；".join(restore_errors)
+            ) from publish_error
+
+        raise RuntimeError(
+            "发布完整文件失败，"
+            "已恢复发布前的旧版本"
+        ) from publish_error
+
+
 def assemble_completed_file(
     plan: FilePlan,
     config: RuntimeConfig,
@@ -173,21 +278,22 @@ def assemble_completed_file(
     """
     验证所有分片后，合并生成完整 Markdown。
 
-    规则：
+    处理规则：
 
-    - 任意分片未完成，直接失败；
-    - 第一片保留原样；
-    - 后续分片的重复 Front Matter 会被移除；
-    - 合并结果会与完整源文件做质量比较；
-    - 新一轮合并开始前删除旧完整文件；
-    - 严重质量异常时不生成最终文件；
-    - 最终文件和 metadata 使用原子写入。
+    - 任意分片未完成时不合并；
+    - 第一片完整保留；
+    - 后续分片重复的 Front Matter 会被移除；
+    - 合并结果先在内存中完成；
+    - 发布前执行完整文档质量检查；
+    - 质量检查失败时保留旧完整文件；
+    - 新结果全部通过后才替换旧完整文件；
+    - 发布失败时尽量恢复旧完整文件和 metadata。
     """
     total_parts = len(plan.chunks)
 
     if total_parts <= 0:
         raise RuntimeError(
-            f"文件没有可合并的分片："
+            "文件没有可合并的分片："
             f"{plan.relative_path}"
         )
 
@@ -196,11 +302,14 @@ def assemble_completed_file(
     )
 
     part_texts: list[str] = []
-    part_metadata: list[dict[str, Any]] = []
+    part_metadata: list[
+        dict[str, Any]
+    ] = []
 
-    # 先完整验证所有分片。
-    # 在分片不完整时保留旧完整文件，避免误删；
-    # 一旦所有分片确认有效，旧完整文件才会被清理。
+    # --------------------------------------------------------
+    # 验证并读取全部分片
+    # --------------------------------------------------------
+
     for part_number, chunk in enumerate(
         plan.chunks,
         start=1,
@@ -243,7 +352,7 @@ def assemble_completed_file(
 
         if not part_text:
             raise RuntimeError(
-                f"分片内容为空："
+                "分片内容为空："
                 f"{output_path}"
             )
 
@@ -257,9 +366,17 @@ def assemble_completed_file(
             )
 
         if part_text:
-            part_texts.append(part_text)
+            part_texts.append(
+                part_text
+            )
 
-        part_metadata.append(metadata)
+        part_metadata.append(
+            metadata
+        )
+
+    # --------------------------------------------------------
+    # 构造候选完整文件
+    # --------------------------------------------------------
 
     final_text = "\n\n".join(
         part_texts
@@ -267,19 +384,18 @@ def assemble_completed_file(
 
     if not final_text:
         raise RuntimeError(
-            f"合并结果为空："
+            "合并结果为空："
             f"{plan.relative_path}"
         )
 
     final_text += "\n"
 
-    # 所有分片都已确认有效。
-    # 现在旧完整文件已经不能代表当前这批分片，
-    # 因此先删除，避免质量失败后留下旧结果。
-    remove_existing_final_output(
-        final_path,
-        final_metadata_path,
-    )
+    # --------------------------------------------------------
+    # 完整文档质量检查
+    #
+    # 重要：这里尚未修改旧完整文件。
+    # 如果检查失败，旧完整文件会继续保留。
+    # --------------------------------------------------------
 
     source_text = read_text(
         plan.source_path
@@ -296,7 +412,12 @@ def assemble_completed_file(
             + "；".join(
                 quality.severe_errors
             )
+            + "。旧完整文件已保留。"
         )
+
+    # --------------------------------------------------------
+    # 构造完整文件 metadata
+    # --------------------------------------------------------
 
     part_warnings = _collect_part_warnings(
         part_metadata
@@ -316,59 +437,52 @@ def assemble_completed_file(
     )
 
     final_metadata = {
-        "version": 4,
+        "version": 5,
+        "status": "completed",
         "source_file": (
             plan.relative_path.as_posix()
         ),
-        "source_sha256": plan.source_sha256,
-        "prompt_sha256": config.prompt_sha256,
+        "source_sha256": (
+            plan.source_sha256
+        ),
+        "prompt_sha256": (
+            config.prompt_sha256
+        ),
         "model": config.model,
-        "base_url": config.base_url.rstrip("/"),
+        "base_url": (
+            config.base_url.rstrip("/")
+        ),
         "part_count": total_parts,
         "output_sha256": sha256_text(
             final_text
         ),
-        "output_chars": len(final_text),
-        "review_required": review_required,
+        "output_chars": len(
+            final_text
+        ),
+        "review_required": (
+            review_required
+        ),
         "quality": quality.to_dict(),
         "part_warnings": part_warnings,
         "completed_at": now_iso(),
     }
 
-    try:
-        atomic_write_text(
-            final_path,
-            final_text,
-        )
+    # --------------------------------------------------------
+    # 所有检查通过后，才发布候选完整文件。
+    # --------------------------------------------------------
 
-        atomic_write_json(
-            final_metadata_path,
-            final_metadata,
-        )
-
-    except Exception:
-        # 防止只写入了其中一个文件。
-        try:
-            final_path.unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
-
-        try:
-            final_metadata_path.unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
-
-        raise
+    _publish_final_output(
+        final_path=final_path,
+        metadata_path=final_metadata_path,
+        final_text=final_text,
+        final_metadata=final_metadata,
+    )
 
     print(
         "[完整文件质量] "
-        f"保留比例："
+        "保留比例："
         f"{quality.retained_ratio:.1%}；"
-        f"删除比例："
+        "删除比例："
         f"{quality.removed_ratio:.1%}"
     )
 
@@ -386,4 +500,7 @@ def assemble_completed_file(
                 )
             )
 
-    return final_path, final_metadata_path
+    return (
+        final_path,
+        final_metadata_path,
+    )
