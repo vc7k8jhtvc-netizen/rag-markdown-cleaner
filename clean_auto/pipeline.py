@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 from .api_client import ApiClient
 from .chunking import (
-    build_file_plans,
+    build_file_plan,
     find_input_files,
     plan_has_pending_chunks,
 )
@@ -42,18 +43,12 @@ def final_output_is_current(
     base_url: str,
 ) -> bool:
     """
-    检查完整合并文件及其 metadata 是否存在且有效。
+    检查完整合并文件和 metadata 是否存在且对应当前分片计划。
 
-    只要发生以下任意情况，就返回 False：
+    任意文件变化、完整文件缺失、metadata 损坏或完整文件被修改时，
+    都返回 False，使程序进入 process_file() 重新合并。
 
-    - 完整文件不存在；
-    - 完整文件 metadata 不存在；
-    - metadata 无法解析；
-    - 源文件发生变化；
-    - prompt 发生变化；
-    - 模型或 API 地址发生变化；
-    - 分片数量发生变化；
-    - 完整文件被修改或损坏。
+    已完成分片会在 process_file() 中跳过，因此重新合并不会重复调用 API。
     """
     filename_stem = safe_name(
         plan.source_path.stem
@@ -76,7 +71,9 @@ def final_output_is_current(
         return False
 
     try:
-        final_text = read_text(final_path)
+        final_text = read_text(
+            final_path
+        )
 
         if not final_text.strip():
             return False
@@ -89,6 +86,7 @@ def final_output_is_current(
             return False
 
         expected_values = {
+            "status": "completed",
             "source_file": (
                 plan.relative_path.as_posix()
             ),
@@ -126,13 +124,12 @@ def plan_needs_processing(
     """
     判断文件是否需要进入处理流程。
 
-    需要处理包括两种情况：
+    以下任一情况会返回 True：
 
-    1. 某个模型分片尚未完成；
-    2. 分片都已完成，但最终完整文件缺失或失效。
+    - 有模型分片未完成；
+    - 所有分片完成，但完整合并文件缺失或无效。
 
-    第二种情况进入 process_file() 后会跳过所有已完成分片，
-    只执行完整文件合并，不会重复调用 API。
+    第二种情况只会重新合并，不会重复调用 API。
     """
     if plan_has_pending_chunks(
         plan=plan,
@@ -148,6 +145,89 @@ def plan_needs_processing(
         model=model,
         base_url=base_url,
     )
+
+
+def relative_name(
+    source_path: Path,
+    input_dir: Path,
+) -> str:
+    """
+    尽可能返回相对于 input 的安全日志名称。
+
+    即使路径异常，也不要让记录失败逻辑本身崩溃。
+    """
+    try:
+        return source_path.relative_to(
+            input_dir
+        ).as_posix()
+    except ValueError:
+        return source_path.name
+
+
+def build_plans_safely(
+    source_paths: list[Path],
+    input_dir: Path,
+    output_dir: Path,
+    max_chars: int,
+    max_file_size: int,
+    log_dir: Path,
+) -> tuple[list[FilePlan], list[dict[str, str]]]:
+    """
+    按文件建立计划，不让一个异常文件中断整批任务。
+
+    失败文件不会进入后续 API 调用流程，但会：
+
+    - 在终端显示错误；
+    - 写入 batch.jsonl；
+    - 计入最终失败文件数量；
+    - 让批处理以退出码 2 结束。
+    """
+    plans: list[FilePlan] = []
+    failed_plans: list[dict[str, str]] = []
+
+    for source_path in source_paths:
+        filename = relative_name(
+            source_path,
+            input_dir,
+        )
+
+        try:
+            plan = build_file_plan(
+                source_path=source_path,
+                input_dir=input_dir,
+                output_dir=output_dir,
+                max_chars=max_chars,
+                max_file_size=max_file_size,
+            )
+
+            plans.append(plan)
+
+        except Exception as exc:
+            message = compact_error(exc)
+
+            failed_plans.append(
+                {
+                    "file": filename,
+                    "error": message,
+                }
+            )
+
+            print(
+                f"[规划失败] {filename}："
+                f"{message}"
+            )
+
+            append_log(
+                log_dir,
+                filename,
+                "planning_failed",
+                {
+                    "error": message,
+                    "stage": "build_file_plan",
+                },
+            )
+
+    return plans, failed_plans
 
 
 def main(
@@ -181,19 +261,37 @@ def main(
         "[准备] 正在读取文件并生成分片计划……"
     )
 
-    plans = build_file_plans(
-        source_paths=source_paths,
-        input_dir=config.input_dir,
-        output_dir=config.output_dir,
-        max_chars=config.max_chars,
-        max_file_size=config.max_file_size,
+    plans, planning_failures = (
+        build_plans_safely(
+            source_paths=source_paths,
+            input_dir=config.input_dir,
+            output_dir=config.output_dir,
+            max_chars=config.max_chars,
+            max_file_size=config.max_file_size,
+            log_dir=config.log_dir,
+        )
     )
 
     pending_plans: list[FilePlan] = []
 
     for plan in plans:
         try:
-            if plan_needs_processing(
+            has_pending_chunks = (
+                plan_has_pending_chunks(
+                    plan=plan,
+                    prompt_sha256=(
+                        config.prompt_sha256
+                    ),
+                    model=config.model,
+                    base_url=config.base_url,
+                )
+            )
+
+            if has_pending_chunks:
+                pending_plans.append(plan)
+                continue
+
+            if not final_output_is_current(
                 plan=plan,
                 prompt_sha256=(
                     config.prompt_sha256
@@ -203,26 +301,22 @@ def main(
             ):
                 pending_plans.append(plan)
 
-                # 分片都已完成时，说明只需要重新合并。
-                if not plan_has_pending_chunks(
-                    plan=plan,
-                    prompt_sha256=(
-                        config.prompt_sha256
-                    ),
-                    model=config.model,
-                    base_url=config.base_url,
-                ):
-                    print(
-                        "[待重新合并] "
-                        f"{plan.relative_path}"
-                    )
-            else:
                 print(
-                    f"[已完成] "
+                    "[待重新合并] "
                     f"{plan.relative_path}"
                 )
 
+                continue
+
+            print(
+                f"[已完成] "
+                f"{plan.relative_path}"
+            )
+
         except Exception as exc:
+            # 状态检查失败时宁可进入处理流程，
+            # 由 process_file 再次验证分片，
+            # 不把文件误标记为已完成。
             pending_plans.append(plan)
 
             print(
@@ -237,10 +331,33 @@ def main(
         else pending_plans
     )
 
+    # 所有可规划文件均已完成，但仍有规划失败文件。
+    # 不需要调用 API，不过必须返回失败状态。
     if not selected_plans:
+        print()
+
+        if planning_failures:
+            print(
+                "没有待处理文件，"
+                "但存在无法建立计划的文件。"
+            )
+
+            print(
+                f"规划失败文件："
+                f"{len(planning_failures)}"
+            )
+
+            print(
+                f"日志文件："
+                f"{config.log_dir / 'batch.jsonl'}"
+            )
+
+            sys.exit(2)
+
         print(
-            "\n没有需要处理的文件，任务已完成。"
+            "没有需要处理的文件，任务已完成。"
         )
+
         return
 
     print()
@@ -272,8 +389,16 @@ def main(
         f"{config.output_dir}"
     )
     print(
-        f"全部文件："
+        f"全部发现文件："
+        f"{len(source_paths)}"
+    )
+    print(
+        f"成功建立计划："
         f"{len(plans)}"
+    )
+    print(
+        f"规划失败文件："
+        f"{len(planning_failures)}"
     )
     print(
         f"待处理或重新合并文件："
@@ -343,7 +468,7 @@ def main(
 
     total_stats = ProcessStats()
     processed_files = 0
-    failed_files = 0
+    failed_files = len(planning_failures)
     stopped = False
     consecutive_failures = 0
 
@@ -547,8 +672,16 @@ def main(
     print("批量处理结束")
     print("=" * 70)
     print(
-        f"全部文件："
+        f"全部发现文件："
+        f"{len(source_paths)}"
+    )
+    print(
+        f"成功建立计划："
         f"{len(plans)}"
+    )
+    print(
+        f"规划失败文件："
+        f"{len(planning_failures)}"
     )
     print(
         f"本次待处理文件："
