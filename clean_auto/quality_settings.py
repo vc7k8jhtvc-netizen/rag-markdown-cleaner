@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,7 @@ class QualityThresholds:
     expansion_ratio:
         输出字符数 / 输入字符数。
 
-    阈值只用于发现风险，不能证明模型输出正确。
+    阈值只用于发现风险，不能证明模型输出完全正确。
     """
 
     severe_min_retained_ratio: float
@@ -36,9 +37,14 @@ def _read_ratio(
     default: float,
 ) -> float:
     """
-    读取 0 到 10 范围内的比例配置。
+    读取比例环境变量。
 
-    允许大于 1 的扩写比例，例如 2.0 表示 200%。
+    允许的范围是 0 到 10。
+
+    扩写比例可以大于 1，例如：
+
+    1.5 = 150%
+    2.0 = 200%
     """
     raw_value = os.getenv(
         variable_name,
@@ -62,11 +68,24 @@ def _read_ratio(
     return value
 
 
+@lru_cache(maxsize=1)
 def load_quality_thresholds() -> QualityThresholds:
     """
-    从环境变量读取质量阈值。
+    从环境变量加载质量阈值。
 
-    未配置时使用项目原有默认值。
+    每个 Python 进程只加载一次。
+
+    正常启动顺序是：
+
+    1. config.py 加载项目根目录的 .env；
+    2. pipeline 建立运行配置；
+    3. processor 调用 assess_quality()；
+    4. 本函数首次加载并缓存阈值。
+
+    因此，一个大批次即使处理数千个分片，也不会反复执行
+    os.getenv、float 转换和阈值合法性检查。
+
+    如果运行过程中修改 .env，需要重启程序后才会生效。
     """
     thresholds = QualityThresholds(
         severe_min_retained_ratio=_read_ratio(
@@ -130,3 +149,20 @@ def load_quality_thresholds() -> QualityThresholds:
         )
 
     return thresholds
+
+
+def clear_quality_threshold_cache() -> None:
+    """
+    清除质量阈值缓存。
+
+    正式程序通常不需要调用本函数。
+
+    它主要用于：
+
+    - 自动化测试；
+    - 交互式调试；
+    - 同一个 Python 进程中主动修改环境变量后的重新加载。
+
+    普通用户修改 .env 后，重新启动程序即可。
+    """
+    load_quality_thresholds.cache_clear()
