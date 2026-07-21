@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .api_client import (
     ApiClient,
@@ -30,6 +31,11 @@ from .control import (
     controlled_sleep,
     wait_if_paused,
 )
+from .metadata_schema import (
+    CHUNK_METADATA_SCHEMA,
+    CHUNK_METADATA_SCHEMA_VERSION,
+    add_schema_identity,
+)
 from .quality import assess_quality
 from .validation import (
     remove_outer_code_fence,
@@ -44,16 +50,16 @@ def safe_log_path(
     """
     将文件路径转换为相对于项目根目录的日志路径。
 
-    这样日志不会记录：
+    项目目录内的路径：
 
-    D:\\Apps\\Rag-cleaner\\output\\...
+    D:\\Apps\\Rag-cleaner\\output\\example.md
 
-    而是记录：
+    会被记录为：
 
-    output/...
+    output/example.md
 
-    如果路径不在项目目录内，只记录文件名，
-    不泄露本机绝对目录。
+    如果路径不位于项目目录内，只记录文件名，
+    避免日志泄露本机绝对路径。
     """
     try:
         resolved_path = path.resolve()
@@ -77,7 +83,10 @@ def remove_incomplete_output(
     metadata_path: Path,
 ) -> None:
     """
-    清理没有完整提交的分片结果。
+    删除没有完整提交的分片结果。
+
+    如果正文写入成功但 metadata 写入失败，
+    不应保留一个看起来已经完成的分片。
     """
     try:
         output_path.unlink(
@@ -98,13 +107,15 @@ def save_chunk_result(
     output_path: Path,
     metadata_path: Path,
     result: str,
-    metadata: dict,
+    metadata: dict[str, Any],
 ) -> None:
     """
     保存分片结果和 metadata。
 
-    如果任一步失败，删除本次不完整结果，
-    防止留下看似已经完成的输出。
+    两个文件分别使用原子写入。
+
+    如果其中任一步失败，删除本次不完整结果，
+    下次运行时该分片会被安全重试。
     """
     try:
         atomic_write_text(
@@ -133,6 +144,20 @@ def process_file(
     client: ApiClient | None,
     initial_consecutive_failures: int,
 ) -> ProcessOutcome:
+    """
+    处理一个输入文件的全部分片。
+
+    处理流程：
+
+    1. 检查暂停和停止标记；
+    2. 验证分片是否已经完成；
+    3. 构造模型请求；
+    4. 调用 API；
+    5. 校验输出格式；
+    6. 检查内容质量；
+    7. 保存正文和 metadata；
+    8. 全部分片成功后合并完整文件。
+    """
     stats = ProcessStats(
         total_parts=len(plan.chunks)
     )
@@ -216,6 +241,10 @@ def process_file(
             total_parts=total_parts,
         )
 
+        # ----------------------------------------------------
+        # 已完成分片
+        # ----------------------------------------------------
+
         if is_completed_chunk(
             output_path,
             metadata_path,
@@ -230,6 +259,10 @@ def process_file(
             stats.skipped_parts += 1
             consecutive_failures = 0
             continue
+
+        # ----------------------------------------------------
+        # Dry-run
+        # ----------------------------------------------------
 
         if config.dry_run:
             print(
@@ -256,6 +289,10 @@ def process_file(
         )
 
         try:
+            # ------------------------------------------------
+            # 调用模型
+            # ------------------------------------------------
+
             request_result = client.stream_request(
                 system_prompt=config.system_prompt,
                 user_message=user_message,
@@ -277,15 +314,16 @@ def process_file(
             # 基础格式校验
             # ------------------------------------------------
 
-            errors, validation_warnings = (
-                validate_result(
-                    result=result,
-                    input_chunk=chunk,
-                    strict_validation=(
-                        config.strict_validation
-                    ),
-                    part_number=part_number,
-                )
+            (
+                errors,
+                validation_warnings,
+            ) = validate_result(
+                result=result,
+                input_chunk=chunk,
+                strict_validation=(
+                    config.strict_validation
+                ),
+                part_number=part_number,
             )
 
             if errors:
@@ -319,7 +357,7 @@ def process_file(
             )
 
             # ------------------------------------------------
-            # 构建 metadata
+            # 构造分片 metadata
             # ------------------------------------------------
 
             metadata = build_output_metadata(
@@ -328,7 +366,19 @@ def process_file(
                 warnings=warnings,
             )
 
+            # 保留旧 version 字段，兼容已经生成的分片。
             metadata["version"] = 2
+
+            # 增加明确的 schema 类型和 schema 版本。
+            add_schema_identity(
+                metadata=metadata,
+                schema=CHUNK_METADATA_SCHEMA,
+                schema_version=(
+                    CHUNK_METADATA_SCHEMA_VERSION
+                ),
+            )
+
+            metadata["status"] = "completed"
             metadata["review_required"] = (
                 quality.review_required
             )
@@ -337,7 +387,7 @@ def process_file(
             )
 
             # ------------------------------------------------
-            # 保存分片
+            # 保存分片结果
             # ------------------------------------------------
 
             save_chunk_result(
@@ -347,6 +397,8 @@ def process_file(
                 metadata=metadata,
             )
 
+            # 正式结果和 metadata 均保存成功后，
+            # 才删除 partial 文件。
             try:
                 partial_path.unlink(
                     missing_ok=True
@@ -355,9 +407,9 @@ def process_file(
                 pass
 
             # ------------------------------------------------
-            # 日志
+            # 成功日志
             #
-            # 只记录相对于项目根目录的路径。
+            # 只记录相对于项目目录的路径。
             # ------------------------------------------------
 
             append_log(
@@ -432,6 +484,10 @@ def process_file(
             raise
 
         except Exception as exc:
+            # ------------------------------------------------
+            # 分片失败
+            # ------------------------------------------------
+
             stats.failed_parts += 1
             consecutive_failures += 1
 
@@ -491,6 +547,10 @@ def process_file(
                 "再次运行时会重试本片。"
             )
 
+        # ----------------------------------------------------
+        # 分片间暂停
+        # ----------------------------------------------------
+
         if config.pause_between_chunks > 0:
             controlled_sleep(
                 config.pause_between_chunks,
@@ -498,7 +558,7 @@ def process_file(
                 config.stop_file,
             )
 
-    # dry-run 只规划分片，不生成合并文件。
+    # Dry-run 只规划分片，不生成完整文件。
     if config.dry_run:
         return ProcessOutcome(
             stats=stats,
@@ -507,8 +567,12 @@ def process_file(
             ),
         )
 
-    # 只有所有分片均成功或验证为已完成时，
-    # 才生成完整文件。
+    # --------------------------------------------------------
+    # 合并完整文件
+    #
+    # 只有所有分片均成功或已经验证完成时才会执行。
+    # --------------------------------------------------------
+
     if (
         stats.failed_parts == 0
         and stats.success_parts
