@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-cleaner"
-version = "1.4.0"
+version = "1.4.1"
 description = "面向中级注册安全工程师 AI 学习知识库的 Markdown 批量清洗工具"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,7 +35,6 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-# 先启用高置信度错误检查，避免因纯格式问题阻断 CI。
 select = [
   "E9",
   "F63",
