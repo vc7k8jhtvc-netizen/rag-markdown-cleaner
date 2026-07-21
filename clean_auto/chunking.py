@@ -345,6 +345,44 @@ def split_line_by_chars(
     return parts
 
 
+def is_fenced_code_block(
+    block: str,
+) -> bool:
+    """
+    判断结构块是否为 Markdown 围栏代码块。
+    """
+    lines = block.splitlines()
+
+    if not lines:
+        return False
+
+    return _fence_marker(lines[0]) is not None
+
+
+def is_markdown_table_block(
+    block: str,
+) -> bool:
+    """
+    判断结构块是否包含 Markdown 表格分隔行。
+
+    典型分隔行：
+
+    | --- | --- |
+    | :--- | ---: |
+    """
+    separator_pattern = re.compile(
+        r"^[ \t]*\|?"
+        r"[ \t]*:?-{3,}:?[ \t]*"
+        r"(?:\|[ \t]*:?-{3,}:?[ \t]*)+"
+        r"\|?[ \t]*$"
+    )
+
+    return any(
+        separator_pattern.fullmatch(line)
+        for line in block.splitlines()
+    )
+
+
 def split_long_block(
     block: str,
     max_chars: int,
@@ -352,15 +390,35 @@ def split_long_block(
     """
     拆分超过限制的 Markdown 结构块。
 
-    优先按完整行切分：
+    安全策略：
 
-    - 表格不会在普通单元格位置随意切断；
-    - 标题不会在长度未超限时被切断；
-    - 列表项尽量保持完整；
-    - 只有单行本身超过限制时才进一步拆分。
+    - 普通文本优先按完整行切分；
+    - 超长单行优先按句末或空白切分；
+    - 围栏代码块不允许从中间静默切断；
+    - Markdown 表格不允许拆成缺失表头的碎片。
+
+    超长代码块或表格应通过提高 --max-chars，
+    或人工拆分源文件解决。
     """
     if len(block) <= max_chars:
         return [block]
+
+    if is_fenced_code_block(block):
+        raise RuntimeError(
+            "检测到超过单片限制的围栏代码块："
+            f"{len(block):,} > {max_chars:,} 字符。"
+            "为避免破坏代码围栏，程序已停止切分。"
+            "请增大 --max-chars，或人工拆分该代码块。"
+        )
+
+    if is_markdown_table_block(block):
+        raise RuntimeError(
+            "检测到超过单片限制的 Markdown 表格："
+            f"{len(block):,} > {max_chars:,} 字符。"
+            "为避免丢失表头或破坏表格结构，"
+            "程序已停止切分。"
+            "请增大 --max-chars，或人工拆分该表格。"
+        )
 
     parts: list[str] = []
     current_lines: list[str] = []
@@ -423,8 +481,6 @@ def split_long_block(
         )
 
     return result
-
-
 def create_chunks(
     text: str,
     max_chars: int,
