@@ -1,0 +1,50 @@
+﻿# Secrets
+.env
+.env.*
+!.env.example
+
+# Python environment and cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test and tool cache
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime files
+.clean_auto.lock
+pause.flag
+stop.flag
+
+# Local documents and generated results
+input/*
+!input/.gitkeep
+
+output/*
+!output/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+review/*
+!review/.gitkeep
+
+# Temporary files
+*.partial.md
+*.partial.md.meta.json
+*.tmp
+
+# Windows and IDE
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.lnk
