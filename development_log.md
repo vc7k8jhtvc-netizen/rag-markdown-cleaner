@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current branch: `develop`
+Current branch: `feature/batch-concurrency`
 
 Phase 1:
 
@@ -23,7 +23,10 @@ Next stage:
 - 正式标签 `v1.5.0` 指向提交 `22644c6a00c494325b066c7105afb8b5b512f399`；
   GitHub Release 已创建并设为 latest。
 - 发布验证为 139 passed，Windows、Ubuntu 和多 Python 版本 CI 全部通过；未上传 PyPI。
-- 下一阶段：调查一键开始菜单、多文件选择和自定义 1-N 并发处理。
+- v1.6.0 第一阶段已完成：新增受验证的 `--selection-file` JSON 清单，支持按清单首次
+  出现顺序串行处理 `input/` 内的 Markdown 文件；未提供清单时保持原有递归扫描、排序和
+  `--max-files` 行为不变。
+- 后续阶段：文件级并发、批次 manifest、resume/retry-failed 和一键菜单尚未实现。
 
 ## Git History
 
@@ -43,6 +46,9 @@ Next stage:
 - 2026-07-22: v1.5.0 正式发布；标签 `v1.5.0` 指向正式提交
   `22644c6a00c494325b066c7105afb8b5b512f399`，GitHub Release 已创建并设为 latest；
   139 项测试与 Windows/Ubuntu 多 Python 版本 CI 全部通过，未上传 PyPI。
+- 2026-07-22: v1.6.0 第一阶段完成受验证的 selection-file 串行选择处理；清单仅允许
+  `input/` 内的 Markdown 相对路径，并保留首次出现顺序和既有单文件失败隔离。文件级并发、
+  批次 manifest、resume/retry-failed 和一键菜单尚未实现。
 
 ## Known Issues
 
@@ -51,7 +57,7 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 139 passed
+- `pytest -q`: 166 passed
 - `ruff check clean_auto tests`: All checks passed
 - `python -m build`: wheel 和 sdist 构建成功
 - `python -m twine check dist/*`: wheel 和 sdist 均通过
@@ -76,6 +82,13 @@ Next stage:
 - pipeline 规划、处理、API mock、assembly 质量检查和 recovery/cache 完整流程
 - prompt BOM/LF/CRLF 及 source CRLF/LF 变化对应的缓存复用和失效行为
 - 失败分片重试时复用已完成且哈希有效的分片
+
+v1.6.0 第一阶段新增覆盖：
+
+- UTF-8 与 UTF-8 BOM selection JSON、schema 校验和相对 `--base-dir` 解析
+- 清单顺序、规范化绝对路径去重、子目录同名文件和既有目录扫描排序
+- input 越界、绝对/UNC/驱动器路径、符号链接、非 Markdown、cleaned 文件和损坏清单拒绝
+- 缺失选中文件的单文件规划失败隔离、空清单 no-op、`--max-files` 与 dry-run 契约
 
 ## Non-blocking Follow-ups
 

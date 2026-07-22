@@ -607,6 +607,14 @@ def parse_args(
         action="store_true",
         help="只生成处理计划，不调用 API",
     )
+    parser.add_argument(
+        "--selection-file",
+        default="",
+        help=(
+            "UTF-8 JSON 选择清单；"
+            "相对路径按项目根目录解析"
+        ),
+    )
 
     strict_group = (
         parser.add_mutually_exclusive_group()

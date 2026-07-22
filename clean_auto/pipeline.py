@@ -19,6 +19,7 @@ from .config import (
     ProcessStats,
     append_log,
     compact_error,
+    get_base_dir,
     load_runtime_config,
     parse_args,
     read_text,
@@ -34,6 +35,10 @@ from .control import (
 )
 from .locking import acquire_lock, release_lock
 from .processor import process_file
+from .selection import (
+    load_selection_paths,
+    resolve_selection_file,
+)
 
 
 def final_output_is_current(
@@ -235,6 +240,37 @@ def main(
 ) -> None:
     args = parse_args(argv)
     validate_args(args)
+    selected_source_paths: list[Path] | None = None
+    selection_value = getattr(
+        args,
+        "selection_file",
+        "",
+    )
+
+    if selection_value:
+        if getattr(args, "base_dir", ""):
+            selection_base_dir = (
+                Path(args.base_dir)
+                .expanduser()
+                .resolve()
+            )
+        else:
+            selection_base_dir = get_base_dir()
+        selection_file = resolve_selection_file(
+            selection_value,
+            selection_base_dir,
+        )
+        selected_source_paths = load_selection_paths(
+            selection_file,
+            selection_base_dir / "input",
+        )
+
+        if not selected_source_paths:
+            print(
+                "选择清单为空，没有文件需要处理。"
+            )
+            return
+
     config = load_runtime_config(args)
 
     for directory in (
@@ -247,8 +283,10 @@ def main(
             exist_ok=True,
         )
 
-    source_paths = find_input_files(
-        config.input_dir
+    source_paths = (
+        selected_source_paths
+        if selected_source_paths is not None
+        else find_input_files(config.input_dir)
     )
 
     if not source_paths:
