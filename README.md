@@ -255,6 +255,28 @@ input/
 一键菜单.bat
 ```
 
+### v1.6.0 发布候选：批量处理与恢复
+
+- `--workers` 取值为 1-5，默认 1；`workers=1` 保持串行处理。
+- 使用 `--selection-file PATH` 按 UTF-8 JSON 清单选择文件；清单路径必须是相对
+  `input/` 的 POSIX 路径。
+- 使用 `--resume-batch [BATCH_ID]` 继续 `pending`/`interrupted` 文件，或使用
+  `--retry-failed [BATCH_ID]` 为失败文件创建独立重试子批次。
+- 使用 `--batch-status` 只读查看最近批次；批次文件保存在 `logs/batches/`。
+
+```powershell
+python -m clean_auto --workers 3
+python -m clean_auto --selection-file logs/selections/files.json --workers 2
+python -m clean_auto --resume-batch --workers 1
+python -m clean_auto --retry-failed --workers 3
+python -m clean_auto --batch-status
+```
+
+Windows 的 `一键菜单.bat` 支持处理全部文件、选择 `input/` 内的 Markdown 文件或子目录、
+设置 workers、继续、重试和查看状态。选择器范围仅限 `input/` 及其子目录，Python 层会继续执行
+最终路径安全校验。一键菜单和 PowerShell 选择脚本属于源码仓库/Source archive 工具，不包含在
+wheel 中；wheel 用户使用上述 Python CLI。
+
 推荐流程：
 
 ```text
@@ -408,7 +430,7 @@ Python 3.14
 当前版本：
 
 ```text
-当前正式版本 1.5.0
+当前版本 1.6.0 发布候选
 ```
 
 版本发布：
