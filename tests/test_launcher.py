@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -228,47 +231,78 @@ def test_selection_contract_accepts_unicode_and_spaces(
     ]
 
 
-def test_windows_menu_exposes_batch_controls_with_quoted_paths() -> None:
-    menu_path = ROOT / "一键菜单.bat"
-    menu = menu_path.read_text(encoding="utf-8")
-    required_labels = [
-        "Select Markdown files",
-        "Select input subdirectory",
-        "Resume latest batch",
-        "Retry failed files from latest batch",
-        "Set workers",
-        "Show latest batch status",
-        "Open logs directory",
-    ]
-    for label in required_labels:
-        assert label in menu
+def test_windows_menu_launcher_only_starts_powershell_menu() -> None:
+    launcher_path = ROOT / "一键菜单.bat"
+    launcher = launcher_path.read_bytes()
+    text = launcher.decode("ascii")
 
-    assert '--selection-file "%SELECTION_FILE%"' in menu
-    assert '--workers "%WORKERS%"' in menu
-    assert "--resume-batch" in menu
-    assert "--retry-failed" in menu
-    assert "--batch-status" in menu
-    assert '--base-dir "%BASE_DIR%"' in menu
-    assert 'for %%I in ("%BASE_DIR%\\.")' in menu
-    assert '-File "%SELECTOR_SCRIPT%"' in menu
-    assert '"%BASE_DIR%\\input"' in menu
-    assert '"%BASE_DIR%\\output"' in menu
-    assert '"%BASE_DIR%\\logs"' in menu
-    assert "RAG_CLEANER_HOME" in menu
-    assert "powershell.exe" in menu
-    assert "pwsh.exe" in menu
-    assert "--files" not in menu
+    assert not launcher.startswith(b"\xef\xbb\xbf")
+    assert launcher.count(b"\n") == launcher.count(b"\r\n")
+    assert b"\r" not in launcher.replace(b"\r\n", b"")
+    assert 'set "MENU_SCRIPT=%SCRIPT_DIR%scripts\\menu.ps1"' in text
+    assert "where pwsh.exe" in text
+    assert "where powershell.exe" in text
+    assert '-File "%MENU_SCRIPT%"' in text
+    assert 'type "%SCRIPT_DIR%scripts\\powershell_missing.txt"' in text
+    assert "python.exe" not in text
+    assert "clean_auto" not in text
+    assert "Select 0-14" not in text
+    assert "RAG_CLEANER_HOME" in text
+
+    missing_message = (ROOT / "scripts" / "powershell_missing.txt").read_bytes()
+    assert not missing_message.startswith(b"\xef\xbb\xbf")
+    assert missing_message.count(b"\n") == missing_message.count(b"\r\n")
+    assert "未检测到 PowerShell" in missing_message.decode("utf-8")
 
 
-def test_windows_menu_references_existing_selector() -> None:
-    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
-    match = re.search(
-        r'set "SELECTOR_SCRIPT=%SCRIPT_DIR%([^\"]+)"',
-        menu,
-    )
-    assert match is not None
-    selector = ROOT.joinpath(*match.group(1).split("\\"))
-    assert selector.is_file()
+def test_powershell_menu_has_chinese_layout_and_safe_environment_gate() -> None:
+    menu_path = ROOT / "scripts" / "menu.ps1"
+    data = menu_path.read_bytes()
+    script = data.decode("utf-8-sig")
+
+    assert data.startswith(b"\xef\xbb\xbf")
+    assert data.count(b"\n") == data.count(b"\r\n")
+    assert b"\r" not in data.replace(b"\r\n", b"")
+    for label in [
+        "开始处理全部文件",
+        "选择文件或文件夹",
+        "继续或重试任务",
+        "查看处理状态",
+        "设置同时处理数量",
+        "打开处理结果",
+        "安装或修复运行环境",
+        "更多功能",
+        "退出",
+    ]:
+        assert label in script
+
+    assert '$VenvPython = Join-Path $BaseDir ".venv\\Scripts\\python.exe"' in script
+    assert "Test-ProjectPython" in script
+    assert "未来的 一键安装.bat" in script
+    assert "Get-Command python.exe" not in script
+    assert "Get-Command py.exe" not in script
+    assert "OPENAI_API_KEY" not in script
+    assert "sk-" not in script
+
+
+def test_powershell_menu_preserves_cli_and_selection_contracts() -> None:
+    script = (ROOT / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
+
+    assert "select_input_files.ps1" in script
+    assert "-Mode files" in script
+    assert "-Mode directory" in script
+    assert "--selection-file" in script
+    assert "--resume-batch" in script
+    assert "--retry-failed" in script
+    assert "--batch-status" in script
+    assert "--dry-run" in script
+    assert "--max-files" in script
+    assert "--workers" in script
+    assert "& $VenvPython @commandArguments" in script
+    assert "-NoNewWindow" not in script
+    assert "Test-MenuChoice" in script
+    assert "Read-MenuChoice" in script
+    assert "function Open-BatchLog" in script
 
 
 def test_powershell_selector_has_stable_safe_contract() -> None:
@@ -302,6 +336,8 @@ def test_windows_batch_files_have_archive_safe_crlf_bytes() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="ascii")
     assert "*.bat -text whitespace=cr-at-eol" in attributes
     assert "*.cmd -text whitespace=cr-at-eol" in attributes
+    assert "scripts/menu.ps1 -text whitespace=cr-at-eol" in attributes
+    assert "scripts/powershell_missing.txt -text whitespace=cr-at-eol" in attributes
 
     batch_files = sorted(ROOT.glob("*.bat"))
     assert batch_files
@@ -314,53 +350,68 @@ def test_windows_batch_files_have_archive_safe_crlf_bytes() -> None:
 
 
 def test_windows_menu_has_explicit_eof_and_invalid_input_paths() -> None:
-    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
-    assert 'set /p "choice=Select 0-14: "' in menu
-    assert 'set "READ_ERROR=%ERRORLEVEL%"' in menu
-    assert 'if not defined choice (' in menu
-    assert 'if "%READ_ERROR%"=="0" goto INVALID_OPTION' in menu
-    assert "goto INPUT_CLOSED" in menu
+    script = (ROOT / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
 
-    invalid = _label_block(menu, "INVALID_OPTION", "DRYRUN")
-    assert "goto MENU" in invalid
-    assert "goto DRYRUN" not in invalid
-
-    input_closed = _label_block(menu, "INPUT_CLOSED", "DRYRUN")
-    assert "goto END_ERROR" in input_closed
+    assert "function Read-MenuChoice" in script
+    assert "return $null" in script
+    assert "if ($null -eq $choice -or $choice -eq \"0\") { exit 0 }" in script
+    assert "输入无效，未执行操作。" in script
+    assert "输入无效，未启动处理任务。" in script
 
 
 def test_windows_menu_dispatches_exact_choice_values_to_isolated_actions() -> None:
-    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
-    expected_dispatch = {
-        "1": "DRYRUN",
-        "5": "OPEN_OUTPUT",
-        "10": "RESUME_LATEST",
-        "11": "RETRY_FAILED",
-        "12": "SET_WORKERS",
-        "13": "BATCH_STATUS",
-        "14": "OPEN_LOGS",
-        "0": "END",
-    }
-    for choice, label in expected_dispatch.items():
-        assert f'if "%choice%"=="{choice}" goto {label}' in menu
-    assert "%choice:~0,1%" not in menu
+    script = (ROOT / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
 
-    dryrun = _label_block(menu, "DRYRUN", "RUN1")
-    output = _label_block(menu, "OPEN_OUTPUT", "OPEN_LOGS")
-    logs = _label_block(menu, "OPEN_LOGS", "OPEN_LOG")
-    assert "--dry-run" in dryrun and "goto MENU" in dryrun
-    assert 'call :OPEN_DIRECTORY "%BASE_DIR%\\output"' in output
-    assert 'call :OPEN_DIRECTORY "%BASE_DIR%\\logs"' in logs
+    assert '"1" { Invoke-Cleaner -Arguments @("--yes", "--workers", "$Workers") }' in script
+    assert '"2" { Show-SelectionMenu }' in script
+    assert '"3" { Show-RecoveryMenu }' in script
+    assert '"4" { Invoke-Cleaner -Arguments @("--batch-status") }' in script
+    assert '"5" { Set-MenuWorkers }' in script
+    assert '"6" { Open-MenuDirectory -Path (Join-Path $BaseDir "output") }' in script
+    assert '"8" { Show-MoreMenu }' in script
+    assert "[int]$choice" in script
+    assert "@(\"1\", \"2\", \"3\", \"4\", \"5\")" in script
 
 
 def test_windows_menu_blocks_actions_when_python_preflight_fails() -> None:
-    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
-    assert "call :DETECT_PYTHON" in menu
-    assert "if errorlevel 1 goto STARTUP_ERROR" in menu
+    script = (ROOT / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
 
-    detector = _label_block(menu, "DETECT_PYTHON", "CREATE_SELECTION")
-    startup_error = _label_block(menu, "STARTUP_ERROR", "MENU")
-    assert 'import clean_auto.pipeline' in detector
-    assert "goto END_ERROR" in startup_error
-    assert "OPEN_OUTPUT" not in startup_error
-    assert "OPEN_LOGS" not in startup_error
+    assert "if (-not (Test-ProjectPython))" in script
+    assert "Show-EnvironmentRequired" in script
+    assert "exit 1" in script
+    assert "不会使用系统 Python，也不会启动处理任务。" in script
+    assert "Get-Command python.exe" not in script
+    assert "Get-Command py.exe" not in script
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
+def test_powershell_menu_safely_handles_missing_venv_in_available_hosts(
+    tmp_path: Path,
+) -> None:
+    menu_path = ROOT / "scripts" / "menu.ps1"
+    hosts = [host for host in ("powershell.exe", "pwsh.exe") if shutil.which(host)]
+    assert hosts
+
+    for host in hosts:
+        missing_venv_result = subprocess.run(
+            [
+                host,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(menu_path),
+                "-BaseDir",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            input="",
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+        assert missing_venv_result.returncode == 1, host
+        assert "未检测到可用的项目运行环境" in missing_venv_result.stdout
+        assert "正在启动处理命令" not in missing_venv_result.stdout
