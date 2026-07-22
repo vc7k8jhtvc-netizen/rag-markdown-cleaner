@@ -2,7 +2,16 @@
 
 ## Current State
 
-Current branch: `feature/file-progress-events`
+Current branch: `feature/chinese-menu`
+
+## v1.7.0 Phase 2: Chinese PowerShell Menu (2026-07-23)
+
+- [x] `一键菜单.bat` 已收缩为 ASCII、无 BOM、CRLF 的 PowerShell 启动器；不再承载菜单或回退到系统 Python。
+- [x] 新增 UTF-8 with BOM、CRLF 的 `scripts/menu.ps1`，提供中文主菜单、选择与恢复子菜单、会话 workers 设置和低频功能入口。
+- [x] 菜单只使用项目 `.venv\\Scripts\\python.exe`；缺失或无法导入项目时安全退出，不启动处理任务。
+- [x] 复用现有 CLI 参数和 `scripts/select_input_files.ps1` 的 selection JSON 契约；未修改 pipeline、manifest、cache 或 API 语义。
+- [x] Windows PowerShell 5.1 已验证中文菜单、空输入、EOF、缺失 `.venv` 安全提示和 dry-run（不发送 API 请求）。
+- [ ] 当前验证主机未安装 PowerShell 7，尚未完成 PowerShell 7 手工冒烟。
 
 ## v1.7.0 Phase 1: File Progress Events (2026-07-23)
 
