@@ -17,10 +17,10 @@ Phase 2:
 
 Next stage:
 
-- [x] v1.5.0 发布候选准备完成（尚未发布）
+- [x] v1.5.0 发布准备完成（正式 tag 和 GitHub Release 尚未创建）
 - 软件版本以 `pyproject.toml` 为权威来源，已从此前基线 `1.4.1` 向前递增至
   `1.5.0`；原 v0.3.0 发布规划已纠正。Phase 1、Phase 2 是开发阶段编号，不是软件版本号。
-- 下一步为发布候选审核和 v1.5.0 正式发布。
+- 下一步为创建 v1.5.0 正式标签与 GitHub Release。
 
 ## Git History
 
