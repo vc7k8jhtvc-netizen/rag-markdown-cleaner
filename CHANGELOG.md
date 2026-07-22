@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.6.1] - 2026-07-23
+
+### Fixed
+
+- 修复 GitHub Source ZIP 中 Windows `.bat` 文件以 LF 行尾保存，导致 `cmd.exe` 错误解析一键菜单的问题。
+- 修复空输入、无效输入和 stdin EOF 可能穿透到 Dry-run 或形成异常循环的问题。
+- 修复菜单启动失败时可能误触发其他菜单动作的问题。
+- 确保 Source archive 中 `.bat` 和 `.cmd` 文件保留 CRLF 且无 BOM。
+
+### Compatibility
+
+- 不改变批次、并发、manifest、selection、缓存、chunking、metadata 或输出契约。
+- `.venv` 可用时优先使用；否则仅在系统 Python 可以运行当前项目时安全回退。
+- 中文菜单、一键安装和菜单精简不包含在 v1.6.1 中。
+
 ## [1.6.0] - 2026-07-23
 
 ### Added
