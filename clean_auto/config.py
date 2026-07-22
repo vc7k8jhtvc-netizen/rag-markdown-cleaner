@@ -418,9 +418,12 @@ def read_text(path: Path) -> str:
         "gbk",
     ):
         try:
-            return path.read_text(
-                encoding=encoding
-            )
+            with path.open(
+                "r",
+                encoding=encoding,
+                newline="",
+            ) as file:
+                return file.read()
         except UnicodeDecodeError as exc:
             last_error = exc
 
