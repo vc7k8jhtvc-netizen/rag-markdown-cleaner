@@ -17,12 +17,13 @@ Phase 2:
 
 Next stage:
 
-- [x] v1.6.0 正式发布文档已完成，等待最终合并、标签与 GitHub Release；尚未正式发布。
-  功能已在 develop 合并提交
-  `2163d4b9ae47fa2e812ac2d821e5176d5f78c335`，远端 CI 已全部通过。
+- [x] v1.6.0 已于 2026-07-23 正式发布；标签 `v1.6.0` 指向 main 发布提交
+  `ffcc8d39b53d4164dec74f4e160d67315c1421c0`，GitHub Release 已创建并设为 latest。
 - 五个 v1.6.0 开发阶段已完成：`--selection-file`、串行 manifest/resume、workers 并发与
-  API 协调、retry-failed 子批次、Windows 菜单接入。当前测试为 273 passed。
-- 下一步：将 release/v1.6.0 合并到 main，验证后创建 v1.6.0 标签和 GitHub Release。
+  API 协调、retry-failed 子批次、Windows 菜单接入。
+- 发布验证为 273 passed，Windows/Linux 多 Python 版本和构建 CI 全部通过；未上传 PyPI。
+- 下一阶段：收集真实批量处理反馈；后续评估 workers 设置持久化、批次历史浏览和更完善的
+  跨平台交互。这些后续功能尚未实现。
 
 - [x] v1.5.0 已于 2026-07-22 正式发布
 - 软件版本以 `pyproject.toml` 为权威来源，已从此前基线 `1.4.1` 向前递增至
@@ -50,7 +51,8 @@ Next stage:
   子目录选择、会话级 workers 1-5、resume latest、retry failed latest、只读 batch
   status，以及 input/output/logs 工作目录入口。选择范围仍仅限 `input/` 及其子目录，
   PowerShell 只生成 selection JSON，Python 层继续执行最终路径安全校验。
-- v1.6.0 功能已合并到 `develop`，尚未合并到 `main`，也尚未发布。
+- v1.6.0 正式发布历史已同步到 `main` 和 `develop`；`release/v1.6.0` 与
+  `feature/batch-concurrency` 均保留。
 
 ## Git History
 
