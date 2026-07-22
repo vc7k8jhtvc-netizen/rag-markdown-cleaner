@@ -11,6 +11,7 @@ Phase 1:
 Phase 2:
 
 - [x] 第一批编码契约测试完成
+- [x] 第二批编码与 CRLF 端到端测试完成
 - [ ] Phase 2 后续工作待完成
 - 本批次未修改生产代码。
 
@@ -20,6 +21,8 @@ Phase 2:
   和混合换行，并补充跨平台回归测试。
 - 2026-07-22: `feature/encoding-preserve` 完成 Phase 2 第一批编码契约测试，覆盖编码、
   换行、原始字节哈希、API 消息、assembly 质量检查和 recovery 行为；未修改生产代码。
+- 2026-07-22: `feature/encoding-preserve` 完成 Phase 2 第二批编码与 CRLF 端到端测试，
+  覆盖规划、分片、处理、组装、缓存恢复和失败重试流程；未修改生产代码。
 
 ## Known Issues
 
@@ -28,7 +31,7 @@ Phase 2:
 
 ## Test Result
 
-- `pytest -q`: 128 passed
+- `pytest -q`: 135 passed
 - `ruff check clean_auto tests`: All checks passed
 
 新增覆盖：
@@ -42,3 +45,12 @@ Phase 2:
 - assembly 质量检查的 CRLF source
 - prompt/source hash 与 recovery 行为
 - `atomic_write_text()` 的 UTF-8、BOM 和换行契约
+
+第二批新增覆盖：
+
+- 结构化 CRLF Markdown 在规划、分片和原始字节哈希之间保持一致
+- UTF-8、UTF-8 BOM 和 GB18030 输入进入正常规划流程
+- 无法解码文件按批处理契约隔离，不影响有效文件
+- pipeline 规划、处理、API mock、assembly 质量检查和 recovery/cache 完整流程
+- prompt BOM/LF/CRLF 及 source CRLF/LF 变化对应的缓存复用和失效行为
+- 失败分片重试时复用已完成且哈希有效的分片

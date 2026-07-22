@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from clean_auto.chunking import build_file_plan, create_chunks
+from clean_auto.chunking import (
+    build_expected_metadata,
+    build_file_plan,
+    create_chunks,
+)
 from clean_auto.config import (
     atomic_write_text,
     read_text,
@@ -189,6 +193,125 @@ def test_build_file_plan_preserves_crlf_and_hashes_raw_bytes(
     )
 
     assert lf_plan.source_sha256 != plan.source_sha256
+
+
+def test_structured_crlf_markdown_plan_is_lossless(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    source_path = input_dir / "structured.md"
+    source_text = (
+        "# 编码与 Markdown\r\n\r\n"
+        "普通段落包含中文、café 和 emoji 🚀。  \r\n\r\n"
+        "- 一级列表\r\n"
+        "  - 嵌套列表：项目二\r\n\r\n"
+        "> 引用第一行\r\n"
+        ">\r\n"
+        "> 引用第二段\r\n\r\n"
+        "```python\r\n"
+        "print('你好, café')\r\n"
+        "```\r\n\r\n"
+        "| 列 | 值 |\r\n"
+        "| --- | --- |\r\n"
+        "| 中文 | naïve |\r\n"
+    )
+    raw_content = source_text.encode("utf-8")
+    input_dir.mkdir()
+    source_path.write_bytes(raw_content)
+
+    plan = build_file_plan(
+        source_path=source_path,
+        input_dir=input_dir,
+        output_dir=tmp_path / "output",
+        max_chars=80,
+        max_file_size=100_000,
+    )
+    restored_text = "".join(plan.chunks)
+
+    assert len(plan.chunks) > 1
+    assert all(len(chunk) <= 80 for chunk in plan.chunks)
+    assert restored_text == source_text
+    assert plan.source_chars == len(source_text)
+    assert plan.source_sha256 == hashlib.sha256(
+        raw_content
+    ).hexdigest()
+    assert restored_text.endswith("\r\n")
+    assert "\n" not in restored_text.replace("\r\n", "")
+    assert "- 一级列表\r\n  - 嵌套列表" in restored_text
+    assert "> 引用第一行\r\n>\r\n> 引用第二段" in restored_text
+    assert "```python\r\nprint('你好, café')\r\n```" in restored_text
+    assert "| --- | --- |\r\n| 中文 | naïve |" in restored_text
+
+    for part_number, chunk in enumerate(
+        plan.chunks,
+        start=1,
+    ):
+        expected = build_expected_metadata(
+            relative_path=plan.relative_path,
+            source_sha256=plan.source_sha256,
+            chunk_sha256=hashlib.sha256(
+                chunk.encode("utf-8")
+            ).hexdigest(),
+            prompt_sha256="prompt-hash",
+            model="test-model",
+            base_url="https://example.com/v1",
+            part_number=part_number,
+            total_parts=len(plan.chunks),
+        )
+
+        assert expected["chunk_sha256"] == sha256_text(chunk)
+
+
+@pytest.mark.parametrize(
+    ("filename", "raw_content", "source_text"),
+    [
+        (
+            "utf8.md",
+            "UTF-8 中文 café 🚀\r\n".encode("utf-8"),
+            "UTF-8 中文 café 🚀\r\n",
+        ),
+        (
+            "utf8-bom.md",
+            b"\xef\xbb\xbf"
+            + "UTF-8 BOM 中文\r\n".encode("utf-8"),
+            "UTF-8 BOM 中文\r\n",
+        ),
+        (
+            "gb18030.md",
+            "GB18030 扩展字符：\U00020000\r\n".encode(
+                "gb18030"
+            ),
+            "GB18030 扩展字符：\U00020000\r\n",
+        ),
+    ],
+    ids=["utf8", "utf8-bom", "gb18030"],
+)
+def test_supported_encoding_enters_lossless_planning_flow(
+    tmp_path: Path,
+    filename: str,
+    raw_content: bytes,
+    source_text: str,
+) -> None:
+    input_dir = tmp_path / "input"
+    source_path = input_dir / filename
+    input_dir.mkdir()
+    source_path.write_bytes(raw_content)
+
+    plan = build_file_plan(
+        source_path=source_path,
+        input_dir=input_dir,
+        output_dir=tmp_path / "output",
+        max_chars=1000,
+        max_file_size=100_000,
+    )
+
+    assert "".join(plan.chunks) == source_text
+    assert plan.source_chars == len(source_text)
+    assert plan.source_sha256 == hashlib.sha256(
+        raw_content
+    ).hexdigest()
+    assert not "".join(plan.chunks).startswith("\ufeff")
+    assert "\r\n" in "".join(plan.chunks)
 
 
 def test_prompt_hash_changes_for_internal_crlf(
