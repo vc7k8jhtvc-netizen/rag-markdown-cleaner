@@ -10,10 +10,14 @@ Phase 1:
 
 Phase 2:
 
+- [x] 编码与换行保真阶段完成
 - [x] 第一批编码契约测试完成
 - [x] 第二批编码与 CRLF 端到端测试完成
-- [ ] Phase 2 后续工作待完成
-- 本批次未修改生产代码。
+- 本阶段未修改生产代码。
+
+Next stage:
+
+- v0.3.0 发布准备
 
 ## Git History
 
@@ -23,6 +27,8 @@ Phase 2:
   换行、原始字节哈希、API 消息、assembly 质量检查和 recovery 行为；未修改生产代码。
 - 2026-07-22: `feature/encoding-preserve` 完成 Phase 2 第二批编码与 CRLF 端到端测试，
   覆盖规划、分片、处理、组装、缓存恢复和失败重试流程；未修改生产代码。
+- 2026-07-22: Phase 2 编码与换行保真范围审查通过，已达到可合并标准；下一阶段为
+  v0.3.0 发布准备。
 
 ## Known Issues
 
@@ -54,3 +60,10 @@ Phase 2:
 - pipeline 规划、处理、API mock、assembly 质量检查和 recovery/cache 完整流程
 - prompt BOM/LF/CRLF 及 source CRLF/LF 变化对应的缓存复用和失效行为
 - 失败分片重试时复用已完成且哈希有效的分片
+
+## Non-blocking Follow-ups
+
+- 增加 Linux CI 实际运行
+- 在稳定环境中补充 `PermissionError` 测试
+- UTF-16 或自动编码探测支持需要单独设计
+- cleaned 输出继续遵循 UTF-8 和现有组装契约
