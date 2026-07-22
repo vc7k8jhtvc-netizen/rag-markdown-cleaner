@@ -279,7 +279,12 @@ def process_file(
                 pause_file=config.pause_file,
                 stop_file=config.stop_file,
                 partial_path=partial_path,
-                sleep_fn=controlled_sleep,
+                sleep_fn=lambda seconds, pause_file, stop_file: controlled_sleep(
+                    seconds,
+                    pause_file,
+                    stop_file,
+                    reporter=reporter,
+                ),
                 reporter=reporter,
             )
 
