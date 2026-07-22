@@ -16,6 +16,7 @@ from .config import (
 )
 from .control import wait_if_paused
 from .processor import process_file
+from .progress import ProgressEvent, ProgressReporter
 
 
 FileStatus = Literal["succeeded", "failed", "interrupted"]
@@ -57,9 +58,14 @@ def _run_file(
     config: RuntimeConfig,
     client: object,
     process_fn: ProcessFunction,
+    reporter: ProgressReporter | None,
 ) -> FileResult:
     try:
-        wait_if_paused(config.pause_file, config.stop_file)
+        wait_if_paused(
+            config.pause_file,
+            config.stop_file,
+            reporter=reporter,
+        )
         ensure_source_unchanged(plan)
         outcome = process_fn(
             plan=plan,
@@ -68,6 +74,7 @@ def _run_file(
             config=config,
             client=client,
             initial_consecutive_failures=0,
+            reporter=reporter,
         )
         status: FileStatus = (
             "failed"
@@ -75,15 +82,26 @@ def _run_file(
             else "succeeded"
         )
         error = "文件包含失败分片" if status == "failed" else None
-        return FileResult(
+        result = FileResult(
             index=index,
             plan=plan,
             status=status,
             stats=outcome.stats,
             error=error,
         )
+        if reporter is not None:
+            reporter.emit(
+                ProgressEvent(
+                    file_index=index + 1,
+                    total_files=total_files,
+                    relative_path=plan.relative_path,
+                    kind="failed" if status == "failed" else "completed",
+                    error=error,
+                )
+            )
+        return result
     except (GracefulStop, KeyboardInterrupt) as exc:
-        return FileResult(
+        result = FileResult(
             index=index,
             plan=plan,
             status="interrupted",
@@ -91,14 +109,36 @@ def _run_file(
             error=compact_error(exc),
             stop_requested=True,
         )
+        if reporter is not None:
+            reporter.emit(
+                ProgressEvent(
+                    file_index=index + 1,
+                    total_files=total_files,
+                    relative_path=plan.relative_path,
+                    kind="interrupted",
+                    error=result.error,
+                )
+            )
+        return result
     except Exception as exc:
-        return FileResult(
+        result = FileResult(
             index=index,
             plan=plan,
             status="failed",
             stats=ProcessStats(total_parts=len(plan.chunks)),
             error=compact_error(exc),
         )
+        if reporter is not None:
+            reporter.emit(
+                ProgressEvent(
+                    file_index=index + 1,
+                    total_files=total_files,
+                    relative_path=plan.relative_path,
+                    kind="failed",
+                    error=result.error,
+                )
+            )
+        return result
 
 
 def run_file_scheduler(
@@ -111,6 +151,8 @@ def run_file_scheduler(
     on_started: Callable[[int, FilePlan], None] | None = None,
     on_result: Callable[[FileResult], None] | None = None,
     on_cancelled: Callable[[int, FilePlan], None] | None = None,
+    reporter: ProgressReporter | None = None,
+    on_progress: Callable[[], None] | None = None,
 ) -> SchedulerSummary:
     if not 2 <= workers <= 5:
         raise RuntimeError("并发调度器 workers 必须在 2 到 5 之间")
@@ -133,6 +175,15 @@ def run_file_scheduler(
             next_index += 1
             if on_started is not None:
                 on_started(index, plan)
+            if reporter is not None:
+                reporter.emit(
+                    ProgressEvent(
+                        file_index=index + 1,
+                        total_files=len(plans),
+                        relative_path=plan.relative_path,
+                        kind="started",
+                    )
+                )
             future = executor.submit(
                 _run_file,
                 index,
@@ -141,6 +192,7 @@ def run_file_scheduler(
                 config=config,
                 client=client,
                 process_fn=process_fn,
+                reporter=reporter,
             )
             futures[future] = (index, plan)
             submitted += 1
@@ -153,7 +205,15 @@ def run_file_scheduler(
         submit_available(executor)
 
         while futures:
-            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            if on_progress is not None:
+                on_progress()
+            done, _ = wait(
+                futures,
+                timeout=0.1,
+                return_when=FIRST_COMPLETED,
+            )
+            if on_progress is not None:
+                on_progress()
             for future in done:
                 futures.pop(future)
                 if future.cancelled():
@@ -173,6 +233,9 @@ def run_file_scheduler(
                             on_cancelled(index, plan)
             else:
                 submit_available(executor)
+
+        if on_progress is not None:
+            on_progress()
 
     return SchedulerSummary(
         stopped=stopped,
