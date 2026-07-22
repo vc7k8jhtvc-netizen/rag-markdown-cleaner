@@ -11,6 +11,7 @@ from clean_auto.chunking import (
 )
 from clean_auto.config import (
     FilePlan,
+    atomic_write_text,
     sha256_text,
 )
 
@@ -103,9 +104,9 @@ def write_valid_final_output(
         / "测试教材_cleaned.md.meta.json"
     )
 
-    final_path.write_text(
+    atomic_write_text(
+        final_path,
         final_text,
-        encoding="utf-8",
     )
 
     metadata = {
@@ -181,9 +182,9 @@ def write_completed_chunks(
             warnings=[],
         )
         metadata["status"] = "completed"
-        output_path.write_text(
+        atomic_write_text(
+            output_path,
             result + "\n",
-            encoding="utf-8",
         )
         metadata_path.write_text(
             json.dumps(metadata),

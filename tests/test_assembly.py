@@ -18,6 +18,7 @@ from clean_auto.chunking import (
 from clean_auto.config import (
     FilePlan,
     RuntimeConfig,
+    atomic_write_text,
     sha256_text,
 )
 
@@ -124,7 +125,7 @@ def _write_completed_parts(
             warnings=[],
         )
         metadata["status"] = "completed"
-        output_path.write_text(result + "\n", encoding="utf-8")
+        atomic_write_text(output_path, result + "\n")
         metadata_path.write_text(
             json.dumps(metadata),
             encoding="utf-8",
