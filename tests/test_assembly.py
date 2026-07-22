@@ -12,12 +12,14 @@ from clean_auto.assembly import (
 )
 from clean_auto.chunking import (
     build_expected_metadata,
+    build_file_plan,
     build_output_metadata,
     get_chunk_paths,
 )
 from clean_auto.config import (
     FilePlan,
     RuntimeConfig,
+    atomic_write_text,
     sha256_text,
 )
 
@@ -124,7 +126,7 @@ def _write_completed_parts(
             warnings=[],
         )
         metadata["status"] = "completed"
-        output_path.write_text(result + "\n", encoding="utf-8")
+        atomic_write_text(output_path, result + "\n")
         metadata_path.write_text(
             json.dumps(metadata),
             encoding="utf-8",
@@ -210,6 +212,63 @@ def test_completed_parts_are_assembled_in_order(
     assert metadata["part_count"] == 3
     assert metadata["output_sha256"] == sha256_text(expected_text)
     assert metadata["schema"] == "rag-cleaner/final-metadata"
+
+
+def test_quality_check_receives_complete_crlf_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    source_path = input_dir / "sample.md"
+    source_text = (
+        "# 标题\r\n\r\n"
+        "第一段正文。\r\n\r\n"
+        "第二段正文。\r\n"
+    )
+    input_dir.mkdir()
+    source_path.write_bytes(
+        source_text.encode("utf-8")
+    )
+    plan = build_file_plan(
+        source_path=source_path,
+        input_dir=input_dir,
+        output_dir=tmp_path / "output",
+        max_chars=1000,
+        max_file_size=100_000,
+    )
+    config = _make_config(tmp_path)
+    _write_completed_parts(
+        plan,
+        config,
+        ["清洗后的正文。"],
+    )
+    quality_inputs: list[str] = []
+
+    def capture_quality(
+        input_text: str,
+        output_text: str,
+    ) -> SimpleNamespace:
+        del output_text
+        quality_inputs.append(input_text)
+        return _quality_report()
+
+    monkeypatch.setattr(
+        assembly,
+        "assess_quality",
+        capture_quality,
+    )
+    monkeypatch.setattr(
+        assembly,
+        "sync_review_copy",
+        lambda **_kwargs: None,
+    )
+
+    assembly.assemble_completed_file(
+        plan=plan,
+        config=config,
+    )
+
+    assert quality_inputs == [source_text]
 
 
 @pytest.mark.parametrize(

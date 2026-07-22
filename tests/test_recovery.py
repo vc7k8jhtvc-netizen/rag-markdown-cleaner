@@ -6,11 +6,13 @@ from pathlib import Path
 import clean_auto.pipeline as pipeline
 from clean_auto.chunking import (
     build_expected_metadata,
+    build_file_plan,
     build_output_metadata,
     get_chunk_paths,
 )
 from clean_auto.config import (
     FilePlan,
+    atomic_write_text,
     sha256_text,
 )
 
@@ -103,9 +105,9 @@ def write_valid_final_output(
         / "测试教材_cleaned.md.meta.json"
     )
 
-    final_path.write_text(
+    atomic_write_text(
+        final_path,
         final_text,
-        encoding="utf-8",
     )
 
     metadata = {
@@ -181,9 +183,9 @@ def write_completed_chunks(
             warnings=[],
         )
         metadata["status"] = "completed"
-        output_path.write_text(
+        atomic_write_text(
+            output_path,
             result + "\n",
-            encoding="utf-8",
         )
         metadata_path.write_text(
             json.dumps(metadata),
@@ -404,6 +406,81 @@ def test_real_recovery_accepts_completed_chunks_and_current_final(
     assert not pipeline.plan_needs_processing(
         plan=plan,
         prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def test_crlf_recovery_tracks_prompt_and_source_byte_changes(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    source_path = input_dir / "测试教材.md"
+    source_text = (
+        "# 测试教材\r\n\r\n"
+        "这是教材正文。\r\n"
+    )
+    input_dir.mkdir()
+    source_path.write_bytes(
+        source_text.encode("utf-8")
+    )
+    plan = build_file_plan(
+        source_path=source_path,
+        input_dir=input_dir,
+        output_dir=tmp_path / "output",
+        max_chars=1000,
+        max_file_size=100_000,
+    )
+    crlf_prompt_sha256 = sha256_text(
+        "第一条规则\r\n第二条规则"
+    )
+    lf_prompt_sha256 = sha256_text(
+        "第一条规则\n第二条规则"
+    )
+    model = "test-model"
+    base_url = "https://example.com/v1"
+    write_completed_chunks(
+        plan=plan,
+        prompt_sha256=crlf_prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256=crlf_prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+    assert not pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=crlf_prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=lf_prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+    source_path.write_bytes(
+        source_text.replace("\r\n", "\n").encode("utf-8")
+    )
+    lf_plan = build_file_plan(
+        source_path=source_path,
+        input_dir=input_dir,
+        output_dir=tmp_path / "output",
+        max_chars=1000,
+        max_file_size=100_000,
+    )
+
+    assert lf_plan.source_sha256 != plan.source_sha256
+    assert "".join(lf_plan.chunks) != "".join(plan.chunks)
+    assert pipeline.plan_needs_processing(
+        plan=lf_plan,
+        prompt_sha256=crlf_prompt_sha256,
         model=model,
         base_url=base_url,
     )
