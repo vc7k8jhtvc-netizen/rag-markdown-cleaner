@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -272,6 +273,30 @@ def normalize_base_url(value: str) -> str:
         raise RuntimeError(
             "OPENAI_BASE_URL 缺少有效主机名"
         )
+
+    if parts.scheme == "http":
+        hostname = parts.hostname.rstrip(
+            "."
+        ).lower()
+
+        is_loopback = hostname == "localhost"
+
+        if not is_loopback:
+            try:
+                is_loopback = (
+                    ipaddress.ip_address(
+                        hostname
+                    ).is_loopback
+                )
+            except ValueError:
+                is_loopback = False
+
+        if not is_loopback:
+            raise RuntimeError(
+                "OPENAI_BASE_URL 使用 HTTP 时"
+                "只允许 localhost 或 loopback 地址；"
+                "远程接口必须使用 HTTPS"
+            )
 
     if parts.username or parts.password:
         raise RuntimeError(

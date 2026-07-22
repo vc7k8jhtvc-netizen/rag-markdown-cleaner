@@ -27,6 +27,11 @@ from .metadata_schema import (
     add_schema_identity,
 )
 from .quality import assess_quality
+from .validation import (
+    FRONT_MATTER_PATTERN,
+    parse_front_matter_with_error,
+    validate_front_matter_fields,
+)
 
 
 def build_final_paths(
@@ -71,27 +76,35 @@ def _remove_front_matter(
         "\ufeff \t\r\n"
     )
 
-    if not stripped.startswith("---"):
+    match = FRONT_MATTER_PATTERN.match(
+        stripped
+    )
+
+    if match is None:
         return text.strip()
 
-    lines = stripped.splitlines()
+    fields, yaml_error = (
+        parse_front_matter_with_error(
+            match.group(1)
+        )
+    )
 
-    if (
-        not lines
-        or lines[0].strip() != "---"
-    ):
+    if yaml_error is not None:
         return text.strip()
 
-    for index in range(
-        1,
-        len(lines),
-    ):
-        if lines[index].strip() == "---":
-            return "\n".join(
-                lines[index + 1:]
-            ).strip()
+    field_errors, _ = (
+        validate_front_matter_fields(
+            fields,
+            strict=True,
+        )
+    )
 
-    return text.strip()
+    if field_errors:
+        return text.strip()
+
+    return stripped[
+        match.end():
+    ].strip()
 
 
 def _read_part_metadata(
