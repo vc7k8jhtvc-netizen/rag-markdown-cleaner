@@ -10,7 +10,7 @@ $VenvPython = Join-Path $VenvPath "Scripts\python.exe"
 $MinimumPython = [Version]"3.10"
 
 function Write-InstallerMessage {
-    param([Parameter(Mandatory = $true)][string]$Message)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message)
     Write-Host $Message
 }
 

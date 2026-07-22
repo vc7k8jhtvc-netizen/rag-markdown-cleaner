@@ -97,3 +97,11 @@ def test_installer_checks_project_contracts_without_secrets() -> None:
     assert "SetEnvironmentVariable" not in script
     assert "HKCU" not in script
     assert "HKLM" not in script
+
+
+def test_installer_allows_blank_success_separator_message() -> None:
+    script = (ROOT / "scripts" / "install_environment.ps1").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "[AllowEmptyString()][string]$Message" in script
