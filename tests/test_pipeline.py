@@ -339,6 +339,47 @@ def test_dry_run_avoids_lock_and_api_client(
     assert process_calls[0]["client"] is None
 
 
+def test_serial_progress_events_and_final_summary_use_manifest_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _make_plan(tmp_path)
+    config = _make_config(tmp_path)
+    _install_pipeline_inputs(monkeypatch, config, [plan])
+
+    def fake_process_file(**kwargs: object) -> ProcessOutcome:
+        reporter = kwargs["reporter"]
+        assert isinstance(reporter, object)
+        reporter.emit(
+            pipeline.ProgressEvent(
+                file_index=1,
+                total_files=1,
+                relative_path=plan.relative_path,
+                kind="chunk_started",
+                part_number=1,
+                total_parts=1,
+            )
+        )
+        return ProcessOutcome(
+            stats=ProcessStats(total_parts=1, success_parts=1),
+            consecutive_failures=0,
+        )
+
+    monkeypatch.setattr(pipeline, "process_file", fake_process_file)
+    monkeypatch.setattr(pipeline, "ApiClient", FakeApiClient)
+    monkeypatch.setattr(pipeline, "acquire_lock", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline, "release_lock", lambda *_args, **_kwargs: None)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+
+    output = capsys.readouterr().out
+    assert "[1/1] 开始处理：sample.md" in output
+    assert "[1/1] 处理中：sample.md（分片 1/1）" in output
+    assert "[1/1] 处理完成：sample.md" in output
+    assert "批次完成：总数 1｜成功 1｜跳过 0｜失败 0｜中断 0｜待处理 0" in output
+
+
 def test_lock_is_released_when_api_client_enter_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

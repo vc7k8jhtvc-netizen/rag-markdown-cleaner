@@ -37,6 +37,7 @@ from .metadata_schema import (
     add_schema_identity,
 )
 from .quality import assess_quality
+from .progress import ProgressEvent, ProgressReporter
 from .validation import (
     remove_outer_code_fence,
     validate_result,
@@ -143,6 +144,7 @@ def process_file(
     config: RuntimeConfig,
     client: ApiClient | None,
     initial_consecutive_failures: int,
+    reporter: ProgressReporter | None = None,
 ) -> ProcessOutcome:
     """
     处理一个输入文件的全部分片。
@@ -167,11 +169,6 @@ def process_file(
     )
 
     if plan.is_empty:
-        print(
-            f"[跳过] 空文件："
-            f"{plan.relative_path}"
-        )
-
         append_log(
             config.log_dir,
             plan.relative_path.as_posix(),
@@ -189,26 +186,6 @@ def process_file(
         exist_ok=True,
     )
 
-    print()
-    print("=" * 70)
-    print(
-        f"[文件 {file_index}/{total_files}] "
-        f"{plan.relative_path}"
-    )
-    print(
-        f"原文字符数："
-        f"{plan.source_chars:,}"
-    )
-    print(
-        f"分片数量："
-        f"{len(plan.chunks)}"
-    )
-    print(
-        f"输出目录："
-        f"{plan.output_dir}"
-    )
-    print("=" * 70)
-
     total_parts = len(plan.chunks)
 
     for part_number, chunk in enumerate(
@@ -218,7 +195,19 @@ def process_file(
         wait_if_paused(
             config.pause_file,
             config.stop_file,
+            reporter=reporter,
         )
+        if reporter is not None:
+            reporter.emit(
+                ProgressEvent(
+                    file_index=file_index,
+                    total_files=total_files,
+                    relative_path=plan.relative_path,
+                    kind="chunk_started",
+                    part_number=part_number,
+                    total_parts=total_parts,
+                )
+            )
 
         (
             output_path,
@@ -250,11 +239,6 @@ def process_file(
             metadata_path,
             expected,
         ):
-            print(
-                f"[跳过] 已完成："
-                f"{output_path.name}"
-            )
-
             stats.success_parts += 1
             stats.skipped_parts += 1
             consecutive_failures = 0
@@ -265,14 +249,6 @@ def process_file(
         # ----------------------------------------------------
 
         if config.dry_run:
-            print(
-                f"[dry-run] 将处理："
-                f"{plan.relative_path} "
-                f"第 {part_number}/{total_parts} 片 "
-                f"({len(chunk):,} 字符) -> "
-                f"{output_path.name}"
-            )
-
             stats.success_parts += 1
             continue
 
@@ -304,6 +280,7 @@ def process_file(
                 stop_file=config.stop_file,
                 partial_path=partial_path,
                 sleep_fn=controlled_sleep,
+                reporter=reporter,
             )
 
             result = remove_outer_code_fence(
@@ -448,29 +425,13 @@ def process_file(
                 },
             )
 
-            print(
-                f"[保存] {output_path}"
-            )
-
-            print(
-                "[质量] "
-                f"保留比例："
-                f"{quality.retained_ratio:.1%}；"
-                f"删除比例："
-                f"{quality.removed_ratio:.1%}"
-            )
-
             if quality.review_required:
-                print(
-                    "[需要复核] "
-                    "此分片存在质量提示。"
-                )
+                if reporter is not None:
+                    reporter.notice("分片存在质量提示，需要人工复核。")
 
             if warnings:
-                print(
-                    "[检查提示] "
-                    + "；".join(warnings)
-                )
+                if reporter is not None:
+                    reporter.notice("；".join(warnings))
 
             stats.success_parts += 1
             consecutive_failures = 0
@@ -517,23 +478,10 @@ def process_file(
                 },
             )
 
-            print(
-                f"\n[失败] "
-                f"{plan.relative_path} "
-                f"第 {part_number} 片："
-                f"{compact_error(exc)}"
-            )
-
             if (
                 consecutive_failures
                 >= MAX_CONSECUTIVE_FAILURES
             ):
-                print(
-                    f"\n[自动停止] 连续失败达到 "
-                    f"{MAX_CONSECUTIVE_FAILURES} 次，"
-                    "可能是网络、API 服务或模型输出异常。"
-                )
-
                 return ProcessOutcome(
                     stats=stats,
                     consecutive_failures=(
@@ -541,11 +489,6 @@ def process_file(
                     ),
                     stopped=True,
                 )
-
-            print(
-                "继续处理下一个分片；"
-                "再次运行时会重试本片。"
-            )
 
         # ----------------------------------------------------
         # 分片间暂停
@@ -556,6 +499,7 @@ def process_file(
                 config.pause_between_chunks,
                 config.pause_file,
                 config.stop_file,
+                reporter=reporter,
             )
 
     # Dry-run 只规划分片，不生成完整文件。
@@ -579,17 +523,17 @@ def process_file(
         == stats.total_parts
     ):
         try:
-            final_path, _ = (
+            if reporter is None:
                 assemble_completed_file(
                     plan=plan,
                     config=config,
                 )
-            )
-
-            print(
-                "[合并] 已生成完整文件："
-                f"{final_path}"
-            )
+            else:
+                assemble_completed_file(
+                    plan=plan,
+                    config=config,
+                    reporter=reporter,
+                )
 
         except Exception as exc:
             stats.failed_parts += 1
@@ -605,12 +549,6 @@ def process_file(
                         config.base_dir,
                     ),
                 },
-            )
-
-            print(
-                f"[合并失败] "
-                f"{plan.relative_path}："
-                f"{compact_error(exc)}"
             )
 
     return ProcessOutcome(

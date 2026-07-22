@@ -51,6 +51,7 @@ from .control import (
 )
 from .locking import acquire_lock, release_lock
 from .processor import process_file
+from .progress import ProgressConsole, ProgressEvent, ProgressReporter
 from .selection import (
     load_selection_paths,
     resolve_input_paths,
@@ -436,6 +437,10 @@ def main(
     pending_plans: list[FilePlan] = []
     selected_plans: list[FilePlan] = []
     total_stats = ProcessStats()
+    progress_reporter = ProgressReporter()
+    progress_console = ProgressConsole(progress_reporter)
+    progress_reporter.set_consumer(progress_console.write_event)
+    final_counts: dict[str, int] | None = None
     processed_files = 0
     failed_files = 0
     stopped = False
@@ -619,14 +624,15 @@ def main(
                     base_url=config.base_url,
                 ):
                     pending_plans.append(plan)
-                    print(
-                        "[待重新合并] "
-                        f"{plan.relative_path}"
-                    )
                     continue
 
-                print(
-                    f"[已完成] {plan.relative_path}"
+                progress_reporter.emit(
+                    ProgressEvent(
+                        file_index=plans.index(plan) + 1,
+                        total_files=len(plans),
+                        relative_path=plan.relative_path,
+                        kind="skipped",
+                    )
                 )
 
                 if manifest is not None:
@@ -746,10 +752,19 @@ def main(
         print("=" * 70)
 
         if config.dry_run:
+            progress_reporter.set_consumer(progress_console.write_event)
             for file_index, plan in enumerate(
                 selected_plans,
                 start=1,
             ):
+                progress_reporter.emit(
+                    ProgressEvent(
+                        file_index=file_index,
+                        total_files=len(selected_plans),
+                        relative_path=plan.relative_path,
+                        kind="started",
+                    )
+                )
                 outcome = process_file(
                     plan=plan,
                     file_index=file_index,
@@ -757,12 +772,21 @@ def main(
                     config=config,
                     client=None,
                     initial_consecutive_failures=0,
+                    reporter=progress_reporter,
                 )
                 stats = outcome.stats
                 total_stats.total_parts += stats.total_parts
                 total_stats.success_parts += stats.success_parts
                 total_stats.skipped_parts += stats.skipped_parts
                 processed_files += 1
+                progress_reporter.emit(
+                    ProgressEvent(
+                        file_index=file_index,
+                        total_files=len(selected_plans),
+                        relative_path=plan.relative_path,
+                        kind="completed",
+                    )
+                )
         else:
             with ApiClient(
                 config.base_url,
@@ -770,6 +794,7 @@ def main(
                 config.model,
             ) as client:
                 if config.workers > 1:
+                    progress_reporter.set_consumer(None)
                     client.configure_concurrency(config.workers)
 
                     def mark_started(
@@ -832,23 +857,6 @@ def main(
                                 status="succeeded",
                             )
 
-                        if manifest is not None:
-                            counts = manifest["counts"]
-                            finished = (
-                                counts["succeeded"]
-                                + counts["failed"]
-                                + counts["skipped"]
-                                + counts["interrupted"]
-                            )
-                            print(
-                                f"[批次 {finished}/{counts['total']}] "
-                                f"成功 {counts['succeeded']} | "
-                                f"处理中 {counts['running']} | "
-                                f"失败 {counts['failed']} | "
-                                f"跳过 {counts['skipped']} | "
-                                f"待处理 {counts['pending']}"
-                            )
-
                     def mark_cancelled(
                         _index: int,
                         plan: FilePlan,
@@ -869,6 +877,8 @@ def main(
                         on_started=mark_started,
                         on_result=record_result,
                         on_cancelled=mark_cancelled,
+                        reporter=progress_reporter,
+                        on_progress=progress_console.drain,
                     )
                     stopped = stopped or concurrent_summary.stopped
 
@@ -881,6 +891,17 @@ def main(
                     )
 
                     try:
+                        progress_reporter.set_consumer(
+                            progress_console.write_event
+                        )
+                        progress_reporter.emit(
+                            ProgressEvent(
+                                file_index=file_index,
+                                total_files=len(selected_plans),
+                                relative_path=plan.relative_path,
+                                kind="started",
+                            )
+                        )
                         wait_if_paused(
                             config.pause_file,
                             config.stop_file,
@@ -910,6 +931,7 @@ def main(
                             initial_consecutive_failures=(
                                 consecutive_failures
                             ),
+                            reporter=progress_reporter,
                         )
                         stats = outcome.stats
                         total_stats.total_parts += (
@@ -942,12 +964,29 @@ def main(
                                         "文件包含失败分片"
                                     ),
                                 )
+                            progress_reporter.emit(
+                                ProgressEvent(
+                                    file_index=file_index,
+                                    total_files=len(selected_plans),
+                                    relative_path=plan.relative_path,
+                                    kind="failed",
+                                    error="文件包含失败分片",
+                                )
+                            )
                         elif manifest is not None:
                             update_file(
                                 config.log_dir,
                                 manifest,
                                 relative_path,
                                 status="succeeded",
+                            )
+                            progress_reporter.emit(
+                                ProgressEvent(
+                                    file_index=file_index,
+                                    total_files=len(selected_plans),
+                                    relative_path=plan.relative_path,
+                                    kind="completed",
+                                )
                             )
 
                         if outcome.stopped:
@@ -956,7 +995,7 @@ def main(
                             if (
                                 manifest is not None
                                 and stats.failed_parts == 0
-                            ):
+                                ):
                                 update_file(
                                     config.log_dir,
                                     manifest,
@@ -966,6 +1005,15 @@ def main(
                                         "连续失败自动停止"
                                     ),
                                 )
+                            progress_reporter.emit(
+                                ProgressEvent(
+                                    file_index=file_index,
+                                    total_files=len(selected_plans),
+                                    relative_path=plan.relative_path,
+                                    kind="interrupted",
+                                    error="连续失败自动停止",
+                                )
+                            )
 
                             append_log(
                                 config.log_dir,
@@ -1024,8 +1072,14 @@ def main(
                                 error=error,
                             )
 
-                        print(
-                            f"\n[安全停止] {error}"
+                        progress_reporter.emit(
+                            ProgressEvent(
+                                file_index=file_index,
+                                total_files=len(selected_plans),
+                                relative_path=plan.relative_path,
+                                kind="interrupted",
+                                error=error,
+                            )
                         )
                         append_log(
                             config.log_dir,
@@ -1060,24 +1114,27 @@ def main(
                                 ),
                             },
                         )
-                        print(
-                            f"\n[文件失败] "
-                            f"{plan.relative_path}"
+                        progress_reporter.emit(
+                            ProgressEvent(
+                                file_index=file_index,
+                                total_files=len(selected_plans),
+                                relative_path=plan.relative_path,
+                                kind="failed",
+                                error=error,
+                            )
                         )
-                        print(f"错误：{error}")
 
                         if (
                             consecutive_failures
                             >= MAX_CONSECUTIVE_FAILURES
                         ):
                             stopped = True
-                            print(
-                                "\n[自动停止] "
-                                "连续文件失败达到阈值。"
+                            progress_reporter.notice(
+                                "连续文件失败达到阈值，停止本批次。"
                             )
                             break
 
-                        print("继续处理下一个文件。")
+                        progress_reporter.notice("继续处理下一个文件。")
 
         if manifest is not None:
             finalize_manifest(
@@ -1088,6 +1145,7 @@ def main(
             failed_files = (
                 manifest["counts"]["failed"]
             )
+            final_counts = dict(manifest["counts"])
 
     finally:
         if lock_acquired:
@@ -1145,6 +1203,16 @@ def main(
         f"日志文件："
         f"{config.log_dir / 'batch.jsonl'}"
     )
+    if final_counts is not None:
+        print(
+            "批次完成："
+            f"总数 {final_counts['total']}｜"
+            f"成功 {final_counts['succeeded']}｜"
+            f"跳过 {final_counts['skipped']}｜"
+            f"失败 {final_counts['failed']}｜"
+            f"中断 {final_counts['interrupted']}｜"
+            f"待处理 {final_counts['pending']}"
+        )
     print("=" * 70)
 
     if stopped:

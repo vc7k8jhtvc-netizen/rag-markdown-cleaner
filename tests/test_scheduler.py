@@ -17,6 +17,7 @@ from clean_auto.config import (
     sha256_text,
     validate_args,
 )
+from clean_auto.progress import ProgressEvent, ProgressReporter
 
 
 def _config(tmp_path: Path, *, dry_run: bool = False) -> RuntimeConfig:
@@ -321,3 +322,45 @@ def test_cancelled_queued_future_returns_to_pending(
     assert summary.stopped is True
     assert summary.submitted == 2
     assert cancelled == [(1, plans[1])]
+
+
+def test_scheduler_drains_worker_progress_events_from_the_caller_thread(
+    tmp_path: Path,
+) -> None:
+    plans = _plans(tmp_path, 2)
+    reporter = ProgressReporter()
+    observed: list[ProgressEvent] = []
+
+    def process_file(**kwargs: object) -> ProcessOutcome:
+        plan = kwargs["plan"]
+        current_reporter = kwargs["reporter"]
+        assert isinstance(plan, FilePlan)
+        assert isinstance(current_reporter, ProgressReporter)
+        current_reporter.emit(
+            ProgressEvent(
+                file_index=1,
+                total_files=2,
+                relative_path=plan.relative_path,
+                kind="chunk_started",
+                part_number=1,
+                total_parts=1,
+            )
+        )
+        return _success()
+
+    def drain() -> None:
+        observed.extend(reporter.drain())
+
+    scheduler.run_file_scheduler(
+        plans,
+        config=_config(tmp_path),
+        client=object(),
+        workers=2,
+        process_fn=process_file,
+        reporter=reporter,
+        on_progress=drain,
+    )
+
+    assert [event.kind for event in observed].count("started") == 2
+    assert [event.kind for event in observed].count("chunk_started") == 2
+    assert [event.kind for event in observed].count("completed") == 2

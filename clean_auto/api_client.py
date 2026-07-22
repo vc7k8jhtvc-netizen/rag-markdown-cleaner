@@ -28,6 +28,7 @@ from .config import (
     compact_error,
 )
 from .control import wait_if_paused
+from .progress import ProgressReporter
 from .model_budget import (
     ModelBudget,
     apply_output_token_limit,
@@ -566,9 +567,10 @@ class ApiClient:
 
         return payload, estimate
 
-    def _print_budget(
+    def _report_budget(
         self,
         estimate: object,
+        reporter: ProgressReporter | None,
     ) -> None:
         """
         在终端显示当前请求的粗略预算。
@@ -600,8 +602,8 @@ class ApiClient:
         )
 
         if context_window > 0:
-            print(
-                "[上下文预算] "
+            message = (
+                "上下文预算："
                 f"预计输入 "
                 f"{estimated_input:,} tokens；"
                 f"预留输出 "
@@ -612,8 +614,8 @@ class ApiClient:
             )
 
         elif reserved_output > 0:
-            print(
-                "[上下文预算] "
+            message = (
+                "上下文预算："
                 f"预计输入 "
                 f"{estimated_input:,} tokens；"
                 f"输出上限 "
@@ -622,12 +624,15 @@ class ApiClient:
             )
 
         else:
-            print(
-                "[上下文预算] "
+            message = (
+                "上下文预算："
                 f"预计输入约 "
                 f"{estimated_input:,} tokens；"
                 "未配置上下文窗口和输出 token 上限"
             )
+
+        if reporter is not None:
+            reporter.notice(message)
 
     def stream_once(
         self,
@@ -638,6 +643,7 @@ class ApiClient:
         part_number: int,
         total_parts: int,
         stop_file: Path | None = None,
+        reporter: ProgressReporter | None = None,
     ) -> RequestResult:
         """
         执行一次流式请求。
@@ -674,16 +680,6 @@ class ApiClient:
         normal_finish_received = False
         finish_reasons: list[str] = []
         start_time = time.monotonic()
-
-        print(
-            f"\n[文件 {file_index}/{total_files}] "
-            f"[分片 {part_number}/{total_parts}] "
-            "正在调用模型……"
-        )
-
-        self._print_budget(
-            estimate
-        )
 
         try:
             with self._network_stream(
@@ -930,33 +926,6 @@ class ApiClient:
                             content
                         )
 
-                        elapsed = int(
-                            time.monotonic()
-                            - start_time
-                        )
-
-                        minutes, seconds = divmod(
-                            elapsed,
-                            60,
-                        )
-
-                        print(
-                            f"\r文件 "
-                            f"{file_index}/"
-                            f"{total_files} | "
-                            f"分片 "
-                            f"{part_number}/"
-                            f"{total_parts} | "
-                            f"已接收 "
-                            f"{received_chars:,} "
-                            f"字符 | "
-                            f"已用时 "
-                            f"{minutes:02d}:"
-                            f"{seconds:02d}",
-                            end="",
-                            flush=True,
-                        )
-
         except GracefulStop:
             raise
 
@@ -987,8 +956,6 @@ class ApiClient:
                 f"{compact_error(exc)}",
                 partial_text=partial,
             ) from exc
-
-        print()
 
         result_text = "".join(
             answer_parts
@@ -1038,17 +1005,6 @@ class ApiClient:
             - start_time
         )
 
-        print(
-            f"本片完成：输入 "
-            f"{len(user_message):,} 字符，"
-            f"输出 "
-            f"{len(result_text):,} 字符，"
-            f"耗时 "
-            f"{elapsed_seconds:.1f} 秒，"
-            f"SSE 事件 "
-            f"{received_events} 个"
-        )
-
         return RequestResult(
             text=result_text,
             elapsed_seconds=(
@@ -1067,6 +1023,7 @@ class ApiClient:
         self,
         exc: Exception,
         partial_path: Path | None,
+        reporter: ProgressReporter | None,
     ) -> None:
         """
         保存异常中携带的部分模型输出。
@@ -1094,16 +1051,14 @@ class ApiClient:
                 reason=compact_error(exc),
             )
 
-            print(
-                "[部分结果] 已保存："
-                f"{partial_path}"
-            )
+            if reporter is not None:
+                reporter.notice(f"已保存部分结果：{partial_path}")
 
         except Exception as save_exc:
-            print(
-                "[警告] 保存部分结果失败："
-                f"{compact_error(save_exc)}"
-            )
+            if reporter is not None:
+                reporter.notice(
+                    f"保存部分结果失败：{compact_error(save_exc)}"
+                )
 
     def stream_request(
         self,
@@ -1121,6 +1076,7 @@ class ApiClient:
             None,
         ]
         | None = None,
+        reporter: ProgressReporter | None = None,
     ) -> RequestResult:
         """
         执行带重试的流式请求。
@@ -1150,10 +1106,7 @@ class ApiClient:
             MAX_RETRIES + 1,
         ):
             try:
-                wait_if_paused(
-                    pause_file,
-                    stop_file,
-                )
+                wait_if_paused(pause_file, stop_file, reporter=reporter)
 
                 if attempt > 1:
                     retry_after = getattr(
@@ -1196,13 +1149,11 @@ class ApiClient:
                         MAX_RETRY_WAIT_SECONDS,
                     )
 
-                    print(
-                        f"[重试] 第 "
-                        f"{attempt}/"
-                        f"{MAX_RETRIES} 次，"
-                        f"等待 "
-                        f"{retry_after:.1f} 秒……"
-                    )
+                    if reporter is not None:
+                        reporter.notice(
+                            f"请求重试第 {attempt}/{MAX_RETRIES} 次，"
+                            f"等待 {retry_after:.1f} 秒。"
+                        )
 
                     if sleep_fn is not None:
                         sleep_fn(
@@ -1220,6 +1171,7 @@ class ApiClient:
                             wait_if_paused(
                                 pause_file,
                                 stop_file,
+                                reporter=reporter,
                             )
 
                             remaining = (
@@ -1245,6 +1197,7 @@ class ApiClient:
                     part_number=part_number,
                     total_parts=total_parts,
                     stop_file=stop_file,
+                    reporter=reporter,
                 )
 
             except KeyboardInterrupt as exc:
@@ -1256,20 +1209,17 @@ class ApiClient:
                 self._save_partial_if_available(
                     exc,
                     partial_path,
+                    reporter,
                 )
                 raise
 
             except Exception as exc:
                 last_error = exc
 
-                print(
-                    f"\n[请求失败] "
-                    f"{compact_error(exc)}"
-                )
-
                 self._save_partial_if_available(
                     exc,
                     partial_path,
+                    reporter,
                 )
 
                 if (

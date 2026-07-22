@@ -2,7 +2,14 @@
 
 ## Current State
 
-Current branch: `release/v1.6.1`
+Current branch: `feature/file-progress-events`
+
+## v1.7.0 Phase 1: File Progress Events (2026-07-23)
+
+- [x] 新增内部 `ProgressEvent`、线程安全事件队列和主线程中文行式输出。
+- [x] 并发 worker 不再直接写 stdout；分片开始、完成、缓存跳过、失败和中断均通过事件报告。
+- [x] 删除 SSE `\r` 单行刷新，最终批次汇总直接使用 finalize 后的 manifest counts。
+- [x] 已验证进度事件、scheduler、pipeline、processor、API、assembly 以及完整 pytest 和 Ruff 检查。
 
 ## v1.6.1 Release (2026-07-23)
 
