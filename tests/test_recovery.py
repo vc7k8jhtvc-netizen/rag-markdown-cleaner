@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 
 import clean_auto.pipeline as pipeline
+from clean_auto.chunking import (
+    build_expected_metadata,
+    build_output_metadata,
+    get_chunk_paths,
+)
 from clean_auto.config import (
     FilePlan,
     sha256_text,
@@ -139,6 +144,56 @@ def write_valid_final_output(
         final_path,
         metadata_path,
     )
+
+
+def write_completed_chunks(
+    plan: FilePlan,
+    prompt_sha256: str,
+    model: str,
+    base_url: str,
+) -> list[tuple[Path, Path]]:
+    """Write chunk pairs accepted by the real pending-chunk check."""
+    completed_paths: list[tuple[Path, Path]] = []
+
+    for part_number, chunk in enumerate(
+        plan.chunks,
+        start=1,
+    ):
+        output_path, metadata_path, _ = get_chunk_paths(
+            plan.output_dir,
+            plan.source_path,
+            part_number,
+        )
+        result = f"cleaned part {part_number}"
+        expected = build_expected_metadata(
+            relative_path=plan.relative_path,
+            source_sha256=plan.source_sha256,
+            chunk_sha256=sha256_text(chunk),
+            prompt_sha256=prompt_sha256,
+            model=model,
+            base_url=base_url,
+            part_number=part_number,
+            total_parts=len(plan.chunks),
+        )
+        metadata = build_output_metadata(
+            expected=expected,
+            result=result,
+            warnings=[],
+        )
+        metadata["status"] = "completed"
+        output_path.write_text(
+            result + "\n",
+            encoding="utf-8",
+        )
+        metadata_path.write_text(
+            json.dumps(metadata),
+            encoding="utf-8",
+        )
+        completed_paths.append(
+            (output_path, metadata_path)
+        )
+
+    return completed_paths
 
 
 def disable_pending_chunk_check(
@@ -315,6 +370,88 @@ def test_non_completed_status_requires_processing(
 
     disable_pending_chunk_check(
         monkeypatch
+    )
+
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def test_real_recovery_accepts_completed_chunks_and_current_final(
+    tmp_path: Path,
+) -> None:
+    """Cover the complete recovery path without replacing chunk checks."""
+    plan = make_plan(tmp_path)
+    prompt_sha256 = "prompt-hash"
+    model = "test-model"
+    base_url = "https://example.com/v1"
+    write_completed_chunks(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+    assert not pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def test_real_pending_chunk_overrides_current_final_output(
+    tmp_path: Path,
+) -> None:
+    """Cover pending chunk detection taking precedence over a valid final file."""
+    plan = make_plan(tmp_path)
+    prompt_sha256 = "prompt-hash"
+    model = "test-model"
+    base_url = "https://example.com/v1"
+    completed_paths = write_completed_chunks(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+    completed_paths[0][0].unlink()
+
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+
+def test_real_completed_chunks_require_missing_final_to_be_reassembled(
+    tmp_path: Path,
+) -> None:
+    """Cover reassembly when all chunks are current but the final file is absent."""
+    plan = make_plan(tmp_path)
+    prompt_sha256 = "prompt-hash"
+    model = "test-model"
+    base_url = "https://example.com/v1"
+    write_completed_chunks(
+        plan=plan,
+        prompt_sha256=prompt_sha256,
+        model=model,
+        base_url=base_url,
     )
 
     assert pipeline.plan_needs_processing(
