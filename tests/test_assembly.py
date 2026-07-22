@@ -44,7 +44,7 @@ def _make_plan(
     source_path = tmp_path / "input" / "sample.md"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_text = "\n\n".join(chunks)
-    source_path.write_text(source_text, encoding="utf-8")
+    source_path.write_bytes(source_text.encode("utf-8"))
 
     return FilePlan(
         source_path=source_path,
@@ -341,6 +341,35 @@ def test_quality_rejection_preserves_existing_final_output(
         assembly.assemble_completed_file(plan=plan, config=config)
 
     assert publish_calls == []
+    assert final_path.read_text(encoding="utf-8") == "old final"
+    assert metadata_path.read_text(encoding="utf-8") == "old metadata"
+
+
+def test_source_change_before_publish_preserves_existing_final_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["candidate"])
+    final_path, metadata_path = assembly.build_final_paths(plan)
+    final_path.write_text("old final", encoding="utf-8")
+    metadata_path.write_text("old metadata", encoding="utf-8")
+
+    def change_source(**_kwargs: object) -> SimpleNamespace:
+        plan.source_path.write_bytes(b"changed after planning\n")
+        return _quality_report()
+
+    monkeypatch.setattr(assembly, "assess_quality", change_source)
+    monkeypatch.setattr(
+        assembly,
+        "_publish_final_output",
+        lambda **_kwargs: pytest.fail("changed source must not be published"),
+    )
+
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        assembly.assemble_completed_file(plan=plan, config=config)
+
     assert final_path.read_text(encoding="utf-8") == "old final"
     assert metadata_path.read_text(encoding="utf-8") == "old metadata"
 

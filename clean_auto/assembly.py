@@ -17,6 +17,7 @@ from .config import (
     now_iso,
     read_text,
     safe_name,
+    sha256_file,
     sha256_text,
 )
 from .metadata_schema import (
@@ -732,6 +733,12 @@ def assemble_completed_file(
     # --------------------------------------------------------
     # 所有检查通过后安全发布。
     # --------------------------------------------------------
+
+    if sha256_file(plan.source_path) != plan.source_sha256:
+        raise RuntimeError(
+            "源文件在处理期间发生变化，拒绝发布完整输出 "
+            f"(SHA-256 不一致)：{plan.relative_path}"
+        )
 
     _publish_final_output(
         final_path=final_path,

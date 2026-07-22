@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import httpx
 
@@ -426,12 +428,18 @@ class ApiClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self._request_semaphore = threading.BoundedSemaphore(1)
+        self._cooldown_condition = threading.Condition(threading.RLock())
+        self._cooldown_until = 0.0
+        self._monotonic: Callable[[], float] = time.monotonic
 
         # 每个 ApiClient 实例加载一次预算配置。
         self.model_budget: ModelBudget = (
             load_model_budget()
         )
 
+        # HTTPX documents Client as shareable between threads; one shared
+        # pool keeps file-level concurrency bounded by this ApiClient.
         self._client = httpx.Client(
             timeout=httpx.Timeout(
                 connect=CONNECT_TIMEOUT,
@@ -446,6 +454,63 @@ class ApiClient:
             ),
             follow_redirects=False,
         )
+
+    def configure_concurrency(self, workers: int) -> None:
+        if not 1 <= workers <= 5:
+            raise RuntimeError("API workers 必须在 1 到 5 之间")
+        self._request_semaphore = threading.BoundedSemaphore(workers)
+
+    def _extend_rate_limit_cooldown(self, seconds: float) -> None:
+        delay = min(max(0.0, float(seconds)), MAX_RETRY_WAIT_SECONDS)
+        with self._cooldown_condition:
+            self._cooldown_until = max(
+                self._cooldown_until,
+                self._monotonic() + delay,
+            )
+            self._cooldown_condition.notify_all()
+
+    def _wait_for_shared_cooldown(self, stop_file: Path | None) -> None:
+        while True:
+            if stop_file is not None and stop_file.exists():
+                raise GracefulStop(f"检测到停止文件：{stop_file}")
+            with self._cooldown_condition:
+                remaining = self._cooldown_until - self._monotonic()
+                if remaining <= 0:
+                    return
+                self._cooldown_condition.wait(timeout=min(1.0, remaining))
+
+    def _acquire_request_slot(self, stop_file: Path | None) -> None:
+        while True:
+            self._wait_for_shared_cooldown(stop_file)
+            if not self._request_semaphore.acquire(timeout=0.1):
+                continue
+            with self._cooldown_condition:
+                cooling_down = self._cooldown_until > self._monotonic()
+            if not cooling_down:
+                return
+            self._request_semaphore.release()
+
+    @contextmanager
+    def _network_stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        stop_file: Path | None,
+    ) -> Iterator[httpx.Response]:
+        self._acquire_request_slot(stop_file)
+        try:
+            with self._client.stream(
+                method,
+                url,
+                headers=headers,
+                json=payload,
+            ) as response:
+                yield response
+        finally:
+            self._request_semaphore.release()
 
     def close(self) -> None:
         self._client.close()
@@ -621,11 +686,12 @@ class ApiClient:
         )
 
         try:
-            with self._client.stream(
+            with self._network_stream(
                 "POST",
                 url,
                 headers=headers,
-                json=payload,
+                payload=payload,
+                stop_file=stop_file,
             ) as response:
                 if response.status_code != 200:
                     body = _read_error_body(
@@ -646,12 +712,20 @@ class ApiClient:
                         or response.status_code
                         >= 500
                     ):
+                        retry_after = parse_retry_after(
+                            response
+                        )
+                        if response.status_code == 429:
+                            self._extend_rate_limit_cooldown(
+                                RETRY_BASE_SECONDS
+                                if retry_after is None
+                                else retry_after
+                            )
                         raise RetryableRequestError(
                             message=message,
-                            retry_after=(
-                                parse_retry_after(
-                                    response
-                                )
+                            retry_after=retry_after,
+                            status_code=(
+                                response.status_code
                             ),
                         )
 

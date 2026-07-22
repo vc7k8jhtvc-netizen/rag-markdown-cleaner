@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,8 +36,15 @@ MAX_RETRIES = 3
 RETRY_BASE_SECONDS = 5.0
 MAX_RETRY_WAIT_SECONDS = 300.0
 MAX_CONSECUTIVE_FAILURES = 5
+BATCH_ID_PATTERN = re.compile(
+    r"^[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$"
+)
 
 REQUIRE_CONFIRMATION = True
+MIN_WORKERS = 1
+MAX_WORKERS = 5
+
+_LOG_WRITE_LOCK = threading.Lock()
 
 # 教材清洗默认保留兼容性。
 # 使用 --strict 时，第一片必须有完整 Front Matter。
@@ -181,6 +189,7 @@ class RuntimeConfig:
     pause_after_files: int = 0
     max_files: int = 0
     dry_run: bool = False
+    workers: int = 1
 
 
 class GracefulStop(Exception):
@@ -197,10 +206,12 @@ class RetryableRequestError(RuntimeError):
         message: str,
         retry_after: float | None = None,
         partial_text: str = "",
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
         self.partial_text = partial_text
+        self.status_code = status_code
 
 
 def get_base_dir() -> Path:
@@ -562,26 +573,24 @@ def append_log(
             redact_secrets(raw)
         )
 
-    record = {
-        "time": now_iso(),
-        "file": redact_secrets(filename),
-        "status": status,
-        "detail": safe_detail,
-    }
+    with _LOG_WRITE_LOCK:
+        record = {
+            "time": now_iso(),
+            "file": redact_secrets(filename),
+            "status": status,
+            "detail": safe_detail,
+        }
+        serialized = json.dumps(
+            record,
+            ensure_ascii=False,
+        ) + "\n"
+        log_path = log_dir / "batch.jsonl"
 
-    log_path = log_dir / "batch.jsonl"
-
-    with log_path.open(
-        "a",
-        encoding="utf-8",
-    ) as file:
-        file.write(
-            json.dumps(
-                record,
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+        with log_path.open(
+            "a",
+            encoding="utf-8",
+        ) as file:
+            file.write(serialized)
 
 
 def parse_args(
@@ -607,6 +616,41 @@ def parse_args(
         action="store_true",
         help="只生成处理计划，不调用 API",
     )
+    parser.add_argument(
+        "--selection-file",
+        default="",
+        help=(
+            "UTF-8 JSON 选择清单；"
+            "相对路径按项目根目录解析"
+        ),
+    )
+    parser.add_argument(
+        "--resume-batch",
+        nargs="?",
+        const="latest",
+        default="",
+        metavar="BATCH_ID",
+        help=(
+            "恢复 pending/interrupted 文件；"
+            "省略 batch ID 时使用 latest"
+        ),
+    )
+    parser.add_argument(
+        "--retry-failed",
+        nargs="?",
+        const="latest",
+        default="",
+        metavar="BATCH_ID",
+        help=(
+            "重试父批次中的 failed 文件；"
+            "省略 batch ID 时使用 latest"
+        ),
+    )
+    parser.add_argument(
+        "--batch-status",
+        action="store_true",
+        help="显示 latest 批次的只读状态摘要",
+    )
 
     strict_group = (
         parser.add_mutually_exclusive_group()
@@ -628,6 +672,12 @@ def parse_args(
         type=int,
         default=0,
         help="本次最多处理多少个文件；0 表示不限制",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="同时处理的文件数，范围 1-5，默认 1",
     )
     parser.add_argument(
         "--pause-between-files",
@@ -692,6 +742,101 @@ def parse_args(
 def validate_args(
     args: argparse.Namespace,
 ) -> None:
+    resume_batch = getattr(
+        args,
+        "resume_batch",
+        "",
+    )
+    retry_failed = getattr(
+        args,
+        "retry_failed",
+        "",
+    )
+    batch_status = getattr(
+        args,
+        "batch_status",
+        False,
+    )
+
+    if batch_status and any(
+        (
+            resume_batch,
+            retry_failed,
+            getattr(args, "selection_file", ""),
+            getattr(args, "dry_run", False),
+        )
+    ):
+        raise RuntimeError(
+            "--batch-status 不能与处理、恢复、重试或 dry-run 模式同时使用"
+        )
+
+    if (
+        retry_failed
+        and retry_failed != "latest"
+        and not BATCH_ID_PATTERN.fullmatch(retry_failed)
+    ):
+        raise RuntimeError(
+            f"无效 batch ID：{retry_failed!r}"
+        )
+
+    if retry_failed and resume_batch:
+        raise RuntimeError(
+            "--retry-failed 不能与 --resume-batch 同时使用"
+        )
+
+    if retry_failed and getattr(
+        args,
+        "selection_file",
+        "",
+    ):
+        raise RuntimeError(
+            "--retry-failed 不能与 --selection-file 同时使用"
+        )
+
+    if retry_failed and getattr(
+        args,
+        "dry_run",
+        False,
+    ):
+        raise RuntimeError(
+            "--retry-failed 不能与 --dry-run 同时使用"
+        )
+
+    if resume_batch and getattr(
+        args,
+        "selection_file",
+        "",
+    ):
+        raise RuntimeError(
+            "--resume-batch 不能与 --selection-file 同时使用"
+        )
+
+    if resume_batch and getattr(
+        args,
+        "dry_run",
+        False,
+    ):
+        raise RuntimeError(
+            "--resume-batch 不能与 --dry-run 同时使用"
+        )
+
+    workers = getattr(args, "workers", 1)
+    if not MIN_WORKERS <= workers <= MAX_WORKERS:
+        raise RuntimeError("--workers 必须是 1 到 5 之间的整数")
+
+    if workers > 1 and getattr(args, "dry_run", False):
+        raise RuntimeError("--workers 大于 1 时不能使用 --dry-run")
+
+    if workers > 1 and args.pause_after_files > 0:
+        raise RuntimeError(
+            "--workers 大于 1 时不能使用 --pause-after-files"
+        )
+
+    if workers > 1 and args.pause_between_files > 0:
+        raise RuntimeError(
+            "--workers 大于 1 时不能使用 --pause-between-files"
+        )
+
     non_negative_values = {
         "--max-files": args.max_files,
         "--pause-between-files": (
@@ -862,4 +1007,5 @@ def load_runtime_config(
         ),
         max_files=args.max_files,
         dry_run=bool(args.dry_run),
+        workers=getattr(args, "workers", 1),
     )
