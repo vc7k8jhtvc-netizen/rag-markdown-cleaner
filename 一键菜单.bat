@@ -15,6 +15,19 @@ for %%I in ("%BASE_DIR%\.") do set "BASE_DIR=%%~fI"
 set "SELECTOR_SCRIPT=%SCRIPT_DIR%scripts\select_input_files.ps1"
 set "WORKERS=1"
 call :DETECT_POWERSHELL
+call :DETECT_PYTHON
+if errorlevel 1 goto STARTUP_ERROR
+
+:STARTUP_ERROR
+if not defined PYTHON_EXE (
+  echo.
+  echo [ERROR] No usable Python environment can import clean_auto.pipeline.
+  echo Create a virtual environment and install the project before starting the menu:
+  echo   py -3 -m venv .venv
+  echo   .venv\Scripts\python.exe -m pip install -e .
+  pause
+  goto END_ERROR
+)
 
 :MENU
 cls
@@ -22,6 +35,7 @@ echo ========================================
 echo   RAG Markdown Cleaner
 echo   Base dir: "%BASE_DIR%"
 echo   Workers: %WORKERS%
+echo   Python: %PYTHON_EXE%
 echo ========================================
 echo.
 
@@ -63,6 +77,13 @@ echo.
 
 set "choice="
 set /p "choice=Select 0-14: "
+set "READ_ERROR=%ERRORLEVEL%"
+
+if not defined choice (
+  if "%READ_ERROR%"=="0" goto INVALID_OPTION
+  goto INPUT_CLOSED
+)
+if not "%READ_ERROR%"=="0" goto INPUT_CLOSED
 
 if "%choice%"=="1" goto DRYRUN
 if "%choice%"=="2" goto RUN1
@@ -80,10 +101,17 @@ if "%choice%"=="13" goto BATCH_STATUS
 if "%choice%"=="14" goto OPEN_LOGS
 if "%choice%"=="0" goto END
 
+:INVALID_OPTION
 echo.
 echo Invalid option.
 pause
 goto MENU
+
+
+:INPUT_CLOSED
+echo.
+echo [ERROR] Menu input is closed. Exiting without starting a task.
+goto END_ERROR
 
 
 :DRYRUN
@@ -257,6 +285,29 @@ set "POWERSHELL_EXE=powershell.exe"
 exit /b 0
 
 
+:DETECT_PYTHON
+set "PYTHON_EXE="
+if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" goto DETECT_VENV
+goto DETECT_SYSTEM_PYTHON
+
+:DETECT_VENV
+set "PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe"
+"%PYTHON_EXE%" -c "import clean_auto.pipeline" >nul 2>nul
+if not errorlevel 1 exit /b 0
+set "PYTHON_EXE="
+
+:DETECT_SYSTEM_PYTHON
+where python.exe >nul 2>nul
+if errorlevel 1 exit /b 1
+set "PYTHON_EXE=python.exe"
+python.exe -c "import clean_auto.pipeline" >nul 2>nul
+if errorlevel 1 (
+  set "PYTHON_EXE="
+  exit /b 1
+)
+exit /b 0
+
+
 :CREATE_SELECTION
 set "SELECTION_FILE="
 
@@ -350,21 +401,7 @@ echo.
 echo [RUN] python -m clean_auto --base-dir "%BASE_DIR%" %*
 echo.
 
-if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" (
-  "%SCRIPT_DIR%.venv\Scripts\python.exe" -m clean_auto --base-dir "%BASE_DIR%" %*
-) else (
-  where python >nul 2>nul
-
-  if errorlevel 1 (
-    echo [ERROR] Python was not found.
-    echo Create .venv or install Python first.
-    pause
-    exit /b 9009
-  )
-
-  echo [WARN] .venv not found, using system Python.
-  python -m clean_auto --base-dir "%BASE_DIR%" %*
-)
+"%PYTHON_EXE%" -m clean_auto --base-dir "%BASE_DIR%" %*
 
 set "ERR=%ERRORLEVEL%"
 
@@ -390,3 +427,8 @@ exit /b %ERR%
 :END
 endlocal
 exit /b 0
+
+
+:END_ERROR
+endlocal
+exit /b 1

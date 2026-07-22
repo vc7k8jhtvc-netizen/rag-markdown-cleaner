@@ -290,3 +290,77 @@ def test_powershell_selector_has_stable_safe_contract() -> None:
     assert "OPENAI_API_KEY" not in script
     assert "sk-" not in script
     assert "C:\\Users\\" not in script
+
+
+def _label_block(menu: str, label: str, next_label: str) -> str:
+    start = menu.index(f"\n:{label}\n")
+    end = menu.index(f"\n:{next_label}\n", start + 1)
+    return menu[start:end]
+
+
+def test_windows_batch_files_have_archive_safe_crlf_bytes() -> None:
+    attributes = (ROOT / ".gitattributes").read_text(encoding="ascii")
+    assert "*.bat -text whitespace=cr-at-eol" in attributes
+    assert "*.cmd -text whitespace=cr-at-eol" in attributes
+
+    batch_files = sorted(ROOT.glob("*.bat"))
+    assert batch_files
+    for path in batch_files:
+        data = path.read_bytes()
+        assert not data.startswith(b"\xef\xbb\xbf"), path
+        assert b"\n" in data, path
+        assert data.count(b"\n") == data.count(b"\r\n"), path
+        assert b"\r" not in data.replace(b"\r\n", b""), path
+
+
+def test_windows_menu_has_explicit_eof_and_invalid_input_paths() -> None:
+    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
+    assert 'set /p "choice=Select 0-14: "' in menu
+    assert 'set "READ_ERROR=%ERRORLEVEL%"' in menu
+    assert 'if not defined choice (' in menu
+    assert 'if "%READ_ERROR%"=="0" goto INVALID_OPTION' in menu
+    assert "goto INPUT_CLOSED" in menu
+
+    invalid = _label_block(menu, "INVALID_OPTION", "DRYRUN")
+    assert "goto MENU" in invalid
+    assert "goto DRYRUN" not in invalid
+
+    input_closed = _label_block(menu, "INPUT_CLOSED", "DRYRUN")
+    assert "goto END_ERROR" in input_closed
+
+
+def test_windows_menu_dispatches_exact_choice_values_to_isolated_actions() -> None:
+    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
+    expected_dispatch = {
+        "1": "DRYRUN",
+        "5": "OPEN_OUTPUT",
+        "10": "RESUME_LATEST",
+        "11": "RETRY_FAILED",
+        "12": "SET_WORKERS",
+        "13": "BATCH_STATUS",
+        "14": "OPEN_LOGS",
+        "0": "END",
+    }
+    for choice, label in expected_dispatch.items():
+        assert f'if "%choice%"=="{choice}" goto {label}' in menu
+    assert "%choice:~0,1%" not in menu
+
+    dryrun = _label_block(menu, "DRYRUN", "RUN1")
+    output = _label_block(menu, "OPEN_OUTPUT", "OPEN_LOGS")
+    logs = _label_block(menu, "OPEN_LOGS", "OPEN_LOG")
+    assert "--dry-run" in dryrun and "goto MENU" in dryrun
+    assert 'call :OPEN_DIRECTORY "%BASE_DIR%\\output"' in output
+    assert 'call :OPEN_DIRECTORY "%BASE_DIR%\\logs"' in logs
+
+
+def test_windows_menu_blocks_actions_when_python_preflight_fails() -> None:
+    menu = (ROOT / "一键菜单.bat").read_text(encoding="utf-8")
+    assert "call :DETECT_PYTHON" in menu
+    assert "if errorlevel 1 goto STARTUP_ERROR" in menu
+
+    detector = _label_block(menu, "DETECT_PYTHON", "CREATE_SELECTION")
+    startup_error = _label_block(menu, "STARTUP_ERROR", "MENU")
+    assert 'import clean_auto.pipeline' in detector
+    assert "goto END_ERROR" in startup_error
+    assert "OPEN_OUTPUT" not in startup_error
+    assert "OPEN_LOGS" not in startup_error
