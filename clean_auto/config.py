@@ -615,6 +615,17 @@ def parse_args(
             "相对路径按项目根目录解析"
         ),
     )
+    parser.add_argument(
+        "--resume-batch",
+        nargs="?",
+        const="latest",
+        default="",
+        metavar="BATCH_ID",
+        help=(
+            "恢复 pending/interrupted 文件；"
+            "省略 batch ID 时使用 latest"
+        ),
+    )
 
     strict_group = (
         parser.add_mutually_exclusive_group()
@@ -700,6 +711,30 @@ def parse_args(
 def validate_args(
     args: argparse.Namespace,
 ) -> None:
+    resume_batch = getattr(
+        args,
+        "resume_batch",
+        "",
+    )
+
+    if resume_batch and getattr(
+        args,
+        "selection_file",
+        "",
+    ):
+        raise RuntimeError(
+            "--resume-batch 不能与 --selection-file 同时使用"
+        )
+
+    if resume_batch and getattr(
+        args,
+        "dry_run",
+        False,
+    ):
+        raise RuntimeError(
+            "--resume-batch 不能与 --dry-run 同时使用"
+        )
+
     non_negative_values = {
         "--max-files": args.max_files,
         "--pause-between-files": (

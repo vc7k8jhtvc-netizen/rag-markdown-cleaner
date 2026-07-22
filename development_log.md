@@ -26,7 +26,12 @@ Next stage:
 - v1.6.0 第一阶段已完成：新增受验证的 `--selection-file` JSON 清单，支持按清单首次
   出现顺序串行处理 `input/` 内的 Markdown 文件；未提供清单时保持原有递归扫描、排序和
   `--max-files` 行为不变。
-- 后续阶段：文件级并发、批次 manifest、resume/retry-failed 和一键菜单尚未实现。
+- v1.6.0 第二阶段已完成：非 dry-run 串行任务使用
+  `logs/batches/<batch_id>.json` 保存独立 batch manifest，并通过
+  `logs/batches/latest.json` 引用最近创建或恢复的批次。`--resume-batch` 只处理
+  `pending` 和 `interrupted`，暂不自动重试 `failed`。
+- `workers=1` 继续保留现有连续失败停止规则。后续阶段的文件级并发、
+  `--retry-failed` 和一键菜单尚未实现。
 
 ## Git History
 
@@ -49,6 +54,9 @@ Next stage:
 - 2026-07-22: v1.6.0 第一阶段完成受验证的 selection-file 串行选择处理；清单仅允许
   `input/` 内的 Markdown 相对路径，并保留首次出现顺序和既有单文件失败隔离。文件级并发、
   批次 manifest、resume/retry-failed 和一键菜单尚未实现。
+- 2026-07-22: v1.6.0 第二阶段完成串行 batch manifest、latest 指针和
+  `--resume-batch`；恢复仅调度 `pending`/`interrupted`，保留 failed 历史和
+  `workers=1` 的既有连续失败停止规则。文件并发、`--retry-failed` 和菜单尚未实现。
 
 ## Known Issues
 
@@ -57,7 +65,7 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 166 passed
+- `pytest -q`: 204 passed
 - `ruff check clean_auto tests`: All checks passed
 - `python -m build`: wheel 和 sdist 构建成功
 - `python -m twine check dist/*`: wheel 和 sdist 均通过
@@ -89,6 +97,14 @@ v1.6.0 第一阶段新增覆盖：
 - 清单顺序、规范化绝对路径去重、子目录同名文件和既有目录扫描排序
 - input 越界、绝对/UNC/驱动器路径、符号链接、非 Markdown、cleaned 文件和损坏清单拒绝
 - 缺失选中文件的单文件规划失败隔离、空清单 no-op、`--max-files` 与 dry-run 契约
+
+v1.6.0 第二阶段新增覆盖：
+
+- batch manifest/latest 的 schema、原子写入、路径约束、历史保护和损坏输入错误
+- pending/running/succeeded/failed/skipped/interrupted 状态机及 counts 重算
+- 串行成功、缓存跳过、单文件失败隔离、停止和异常退出后的 interrupted 恢复
+- `--max-files` 未处理项保留、latest/显式 batch 恢复、当前源文件重新规划和 hash 检查
+- dry-run/空 selection 不创建批次状态，以及错误字段的限长、换行压平和敏感信息脱敏
 
 ## Non-blocking Follow-ups
 

@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from .api_client import ApiClient
+from .batch_manifest import (
+    create_manifest,
+    file_status,
+    finalize_manifest,
+    load_resume_manifest,
+    prepare_resume,
+    resumable_paths,
+    update_file,
+)
 from .chunking import (
     build_file_plan,
     find_input_files,
@@ -235,12 +245,49 @@ def build_plans_safely(
     return plans, failed_plans
 
 
+def _selection_file_reference(
+    selection_file: Path,
+    base_dir: Path,
+) -> str:
+    try:
+        return selection_file.relative_to(
+            base_dir
+        ).as_posix()
+    except ValueError:
+        return selection_file.name
+
+
+def _resume_source_paths(
+    manifest: dict[str, Any],
+    input_dir: Path,
+) -> list[Path]:
+    source_paths: list[Path] = []
+
+    for relative_path in resumable_paths(
+        manifest
+    ):
+        parts = PurePosixPath(
+            relative_path
+        ).parts
+        source_paths.append(
+            input_dir.joinpath(*parts)
+        )
+
+    return source_paths
+
+
 def main(
     argv: list[str] | None = None,
 ) -> None:
     args = parse_args(argv)
     validate_args(args)
+    resume_value = getattr(
+        args,
+        "resume_batch",
+        "",
+    )
     selected_source_paths: list[Path] | None = None
+    resolved_selection_file: Path | None = None
     selection_value = getattr(
         args,
         "selection_file",
@@ -256,12 +303,12 @@ def main(
             )
         else:
             selection_base_dir = get_base_dir()
-        selection_file = resolve_selection_file(
+        resolved_selection_file = resolve_selection_file(
             selection_value,
             selection_base_dir,
         )
         selected_source_paths = load_selection_paths(
-            selection_file,
+            resolved_selection_file,
             selection_base_dir / "input",
         )
 
@@ -283,202 +330,32 @@ def main(
             exist_ok=True,
         )
 
-    source_paths = (
-        selected_source_paths
-        if selected_source_paths is not None
-        else find_input_files(config.input_dir)
-    )
+    source_paths: list[Path] = []
 
-    if not source_paths:
-        raise RuntimeError(
-            "input 文件夹中没有找到 Markdown 文件："
-            f"{config.input_dir}"
+    if not resume_value:
+        source_paths = (
+            selected_source_paths
+            if selected_source_paths is not None
+            else find_input_files(config.input_dir)
         )
 
-    print(
-        "[准备] 正在读取文件并生成分片计划……"
-    )
+        if not source_paths:
+            raise RuntimeError(
+                "input 文件夹中没有找到 Markdown 文件："
+                f"{config.input_dir}"
+            )
 
-    plans, planning_failures = (
-        build_plans_safely(
-            source_paths=source_paths,
-            input_dir=config.input_dir,
-            output_dir=config.output_dir,
-            max_chars=config.max_chars,
-            max_file_size=config.max_file_size,
-            log_dir=config.log_dir,
-        )
-    )
-
+    lock_acquired = False
+    manifest: dict[str, Any] | None = None
+    plans: list[FilePlan] = []
+    planning_failures: list[dict[str, str]] = []
     pending_plans: list[FilePlan] = []
-
-    for plan in plans:
-        try:
-            has_pending_chunks = (
-                plan_has_pending_chunks(
-                    plan=plan,
-                    prompt_sha256=(
-                        config.prompt_sha256
-                    ),
-                    model=config.model,
-                    base_url=config.base_url,
-                )
-            )
-
-            if has_pending_chunks:
-                pending_plans.append(plan)
-                continue
-
-            if not final_output_is_current(
-                plan=plan,
-                prompt_sha256=(
-                    config.prompt_sha256
-                ),
-                model=config.model,
-                base_url=config.base_url,
-            ):
-                pending_plans.append(plan)
-
-                print(
-                    "[待重新合并] "
-                    f"{plan.relative_path}"
-                )
-
-                continue
-
-            print(
-                f"[已完成] "
-                f"{plan.relative_path}"
-            )
-
-        except Exception as exc:
-            # 状态检查失败时宁可进入处理流程，
-            # 由 process_file 再次验证分片，
-            # 不把文件误标记为已完成。
-            pending_plans.append(plan)
-
-            print(
-                f"[状态检查提示] "
-                f"{plan.relative_path}："
-                f"{compact_error(exc)}"
-            )
-
-    selected_plans = (
-        pending_plans[:config.max_files]
-        if config.max_files > 0
-        else pending_plans
-    )
-
-    # 所有可规划文件均已完成，但仍有规划失败文件。
-    # 不需要调用 API，不过必须返回失败状态。
-    if not selected_plans:
-        print()
-
-        if planning_failures:
-            print(
-                "没有待处理文件，"
-                "但存在无法建立计划的文件。"
-            )
-
-            print(
-                f"规划失败文件："
-                f"{len(planning_failures)}"
-            )
-
-            print(
-                f"日志文件："
-                f"{config.log_dir / 'batch.jsonl'}"
-            )
-
-            sys.exit(2)
-
-        print(
-            "没有需要处理的文件，任务已完成。"
-        )
-
-        return
-
-    print()
-    print("=" * 70)
-    print("RAG Markdown 批量清洗工具")
-    print("=" * 70)
-    print(
-        f"项目根目录："
-        f"{config.base_dir}"
-    )
-    print(
-        "模式："
-        f"{'dry-run（不调用 API）' if config.dry_run else '正式处理'}"
-    )
-    print(
-        f"模型："
-        f"{config.model or '(dry-run)'}"
-    )
-    print(
-        f"API："
-        f"{config.base_url or '(dry-run)'}"
-    )
-    print(
-        f"输入目录："
-        f"{config.input_dir}"
-    )
-    print(
-        f"输出目录："
-        f"{config.output_dir}"
-    )
-    print(
-        f"全部发现文件："
-        f"{len(source_paths)}"
-    )
-    print(
-        f"成功建立计划："
-        f"{len(plans)}"
-    )
-    print(
-        f"规划失败文件："
-        f"{len(planning_failures)}"
-    )
-    print(
-        f"待处理或重新合并文件："
-        f"{len(pending_plans)}"
-    )
-    print(
-        f"本次处理文件："
-        f"{len(selected_plans)}"
-    )
-    print(
-        f"单片最大字符数："
-        f"{config.max_chars:,}"
-    )
-    print(
-        f"单文件大小上限："
-        f"{config.max_file_size:,} bytes"
-    )
-    print(
-        "第 1 分片 Front Matter 校验："
-        f"{'严格' if config.strict_validation else '宽松'}"
-    )
-    print(
-        f"最大请求重试次数："
-        f"{MAX_RETRIES}"
-    )
-    print(
-        f"连续失败停止阈值："
-        f"{MAX_CONSECUTIVE_FAILURES}"
-    )
-    print(
-        f"暂停文件："
-        f"{config.pause_file}"
-    )
-    print(
-        f"停止文件："
-        f"{config.stop_file}"
-    )
-    print(
-        "YAML 解析："
-        f"{'PyYAML' if yaml is not None else '不可用'}"
-    )
-    print("=" * 70)
+    selected_plans: list[FilePlan] = []
+    total_stats = ProcessStats()
+    processed_files = 0
+    failed_files = 0
+    stopped = False
+    consecutive_failures = 0
 
     if not config.dry_run:
         require_confirmation = (
@@ -492,10 +369,7 @@ def main(
                 "\n即将调用 API，输入 Y 继续："
             ).strip().lower()
 
-            if answer not in {
-                "y",
-                "yes",
-            }:
+            if answer not in {"y", "yes"}:
                 print("已取消。")
                 return
 
@@ -503,14 +377,253 @@ def main(
             config.lock_file,
             force_unlock=args.force_unlock,
         )
-
-    total_stats = ProcessStats()
-    processed_files = 0
-    failed_files = len(planning_failures)
-    stopped = False
-    consecutive_failures = 0
+        lock_acquired = True
 
     try:
+        if resume_value:
+            manifest = load_resume_manifest(
+                config.log_dir,
+                resume_value,
+            )
+            prepare_resume(
+                config.log_dir,
+                manifest,
+            )
+            source_paths = _resume_source_paths(
+                manifest,
+                config.input_dir,
+            )
+        elif not config.dry_run:
+            selection_source = (
+                "selection_file"
+                if resolved_selection_file is not None
+                else "scan"
+            )
+            selection_reference = (
+                _selection_file_reference(
+                    resolved_selection_file,
+                    config.base_dir,
+                )
+                if resolved_selection_file is not None
+                else None
+            )
+            manifest = create_manifest(
+                log_dir=config.log_dir,
+                relative_paths=[
+                    relative_name(
+                        path,
+                        config.input_dir,
+                    )
+                    for path in source_paths
+                ],
+                selection_source=selection_source,
+                selection_file=selection_reference,
+            )
+
+        if source_paths:
+            print(
+                "[准备] 正在读取文件并生成分片计划……"
+            )
+            plans, planning_failures = (
+                build_plans_safely(
+                    source_paths=source_paths,
+                    input_dir=config.input_dir,
+                    output_dir=config.output_dir,
+                    max_chars=config.max_chars,
+                    max_file_size=(
+                        config.max_file_size
+                    ),
+                    log_dir=config.log_dir,
+                )
+            )
+
+        if manifest is not None:
+            for failure in planning_failures:
+                update_file(
+                    config.log_dir,
+                    manifest,
+                    failure["file"],
+                    status="failed",
+                    error=failure["error"],
+                )
+            failed_files = (
+                manifest["counts"]["failed"]
+            )
+        else:
+            failed_files = len(
+                planning_failures
+            )
+
+        for plan in plans:
+            relative_path = (
+                plan.relative_path.as_posix()
+            )
+
+            if manifest is not None:
+                update_file(
+                    config.log_dir,
+                    manifest,
+                    relative_path,
+                    status=file_status(
+                        manifest,
+                        relative_path,
+                    ),
+                    source_sha256=(
+                        plan.source_sha256
+                    ),
+                )
+
+            try:
+                has_pending_chunks = (
+                    plan_has_pending_chunks(
+                        plan=plan,
+                        prompt_sha256=(
+                            config.prompt_sha256
+                        ),
+                        model=config.model,
+                        base_url=config.base_url,
+                    )
+                )
+
+                if has_pending_chunks:
+                    pending_plans.append(plan)
+                    continue
+
+                if not final_output_is_current(
+                    plan=plan,
+                    prompt_sha256=(
+                        config.prompt_sha256
+                    ),
+                    model=config.model,
+                    base_url=config.base_url,
+                ):
+                    pending_plans.append(plan)
+                    print(
+                        "[待重新合并] "
+                        f"{plan.relative_path}"
+                    )
+                    continue
+
+                print(
+                    f"[已完成] {plan.relative_path}"
+                )
+
+                if manifest is not None:
+                    update_file(
+                        config.log_dir,
+                        manifest,
+                        relative_path,
+                        status="skipped",
+                        source_sha256=(
+                            plan.source_sha256
+                        ),
+                    )
+
+            except Exception as exc:
+                pending_plans.append(plan)
+                print(
+                    f"[状态检查提示] "
+                    f"{plan.relative_path}："
+                    f"{compact_error(exc)}"
+                )
+
+        selected_plans = (
+            pending_plans[:config.max_files]
+            if config.max_files > 0
+            else pending_plans
+        )
+
+        if not selected_plans:
+            if manifest is not None:
+                finalize_manifest(
+                    config.log_dir,
+                    manifest,
+                    stopped=False,
+                )
+                failed_files = (
+                    manifest["counts"]["failed"]
+                )
+            else:
+                failed_files = len(
+                    planning_failures
+                )
+
+            print()
+
+            if failed_files:
+                print(
+                    "没有待处理文件，"
+                    "但批次中存在失败文件。"
+                )
+                sys.exit(2)
+
+            print(
+                "没有需要处理的文件，任务已完成。"
+            )
+            return
+
+        print()
+        print("=" * 70)
+        print("RAG Markdown 批量清洗工具")
+        print("=" * 70)
+        print(f"项目根目录：{config.base_dir}")
+        print(
+            "模式："
+            f"{'dry-run（不调用 API）' if config.dry_run else '正式处理'}"
+        )
+        print(
+            f"模型：{config.model or '(dry-run)'}"
+        )
+        print(
+            f"API：{config.base_url or '(dry-run)'}"
+        )
+        print(f"输入目录：{config.input_dir}")
+        print(f"输出目录：{config.output_dir}")
+        print(f"全部发现文件：{len(source_paths)}")
+        print(f"成功建立计划：{len(plans)}")
+        print(
+            f"规划失败文件："
+            f"{len(planning_failures)}"
+        )
+        print(
+            f"待处理或重新合并文件："
+            f"{len(pending_plans)}"
+        )
+        print(
+            f"本次处理文件："
+            f"{len(selected_plans)}"
+        )
+        print(
+            f"单片最大字符数："
+            f"{config.max_chars:,}"
+        )
+        print(
+            f"单文件大小上限："
+            f"{config.max_file_size:,} bytes"
+        )
+        print(
+            "第 1 分片 Front Matter 校验："
+            f"{'严格' if config.strict_validation else '宽松'}"
+        )
+        print(f"最大请求重试次数：{MAX_RETRIES}")
+        print(
+            f"连续失败停止阈值："
+            f"{MAX_CONSECUTIVE_FAILURES}"
+        )
+        print(f"暂停文件：{config.pause_file}")
+        print(f"停止文件：{config.stop_file}")
+        print(
+            "YAML 解析："
+            f"{'PyYAML' if yaml is not None else '不可用'}"
+        )
+
+        if manifest is not None:
+            print(
+                f"批次 ID：{manifest['batch_id']}"
+            )
+
+        print("=" * 70)
+
         if config.dry_run:
             for file_index, plan in enumerate(
                 selected_plans,
@@ -519,28 +632,16 @@ def main(
                 outcome = process_file(
                     plan=plan,
                     file_index=file_index,
-                    total_files=len(
-                        selected_plans
-                    ),
+                    total_files=len(selected_plans),
                     config=config,
                     client=None,
                     initial_consecutive_failures=0,
                 )
-
                 stats = outcome.stats
-
-                total_stats.total_parts += (
-                    stats.total_parts
-                )
-                total_stats.success_parts += (
-                    stats.success_parts
-                )
-                total_stats.skipped_parts += (
-                    stats.skipped_parts
-                )
-
+                total_stats.total_parts += stats.total_parts
+                total_stats.success_parts += stats.success_parts
+                total_stats.skipped_parts += stats.skipped_parts
                 processed_files += 1
-
         else:
             with ApiClient(
                 config.base_url,
@@ -551,17 +652,33 @@ def main(
                     selected_plans,
                     start=1,
                 ):
+                    relative_path = (
+                        plan.relative_path.as_posix()
+                    )
+
                     try:
                         wait_if_paused(
                             config.pause_file,
                             config.stop_file,
                         )
 
+                        if manifest is not None:
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                relative_path,
+                                status="running",
+                                source_sha256=(
+                                    plan.source_sha256
+                                ),
+                                increment_attempts=True,
+                            )
+
                         outcome = process_file(
                             plan=plan,
                             file_index=file_index,
-                            total_files=len(
-                                selected_plans
+                            total_files=(
+                                len(selected_plans)
                             ),
                             config=config,
                             client=client,
@@ -569,9 +686,7 @@ def main(
                                 consecutive_failures
                             ),
                         )
-
                         stats = outcome.stats
-
                         total_stats.total_parts += (
                             stats.total_parts
                         )
@@ -584,9 +699,7 @@ def main(
                         total_stats.skipped_parts += (
                             stats.skipped_parts
                         )
-
                         processed_files += 1
-
                         consecutive_failures = (
                             outcome.consecutive_failures
                         )
@@ -594,8 +707,40 @@ def main(
                         if stats.failed_parts > 0:
                             failed_files += 1
 
+                            if manifest is not None:
+                                update_file(
+                                    config.log_dir,
+                                    manifest,
+                                    relative_path,
+                                    status="failed",
+                                    error=(
+                                        "文件包含失败分片"
+                                    ),
+                                )
+                        elif manifest is not None:
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                relative_path,
+                                status="succeeded",
+                            )
+
                         if outcome.stopped:
                             stopped = True
+
+                            if (
+                                manifest is not None
+                                and stats.failed_parts == 0
+                            ):
+                                update_file(
+                                    config.log_dir,
+                                    manifest,
+                                    relative_path,
+                                    status="interrupted",
+                                    error=(
+                                        "连续失败自动停止"
+                                    ),
+                                )
 
                             append_log(
                                 config.log_dir,
@@ -606,12 +751,10 @@ def main(
                                     "停止本批次"
                                 ),
                             )
-
                             break
 
                         if (
-                            config.pause_after_files
-                            > 0
+                            config.pause_after_files > 0
                             and processed_files
                             % config.pause_after_files
                             == 0
@@ -624,8 +767,7 @@ def main(
                             )
 
                         if (
-                            config.pause_between_files
-                            > 0
+                            config.pause_between_files > 0
                             and processed_files
                             < len(selected_plans)
                         ):
@@ -640,70 +782,91 @@ def main(
                         KeyboardInterrupt,
                     ) as exc:
                         stopped = True
+                        error = compact_error(exc)
+
+                        if (
+                            manifest is not None
+                            and file_status(
+                                manifest,
+                                relative_path,
+                            ) == "running"
+                        ):
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                relative_path,
+                                status="interrupted",
+                                error=error,
+                            )
 
                         print(
-                            "\n[安全停止] "
-                            f"{compact_error(exc)}"
+                            f"\n[安全停止] {error}"
                         )
-
                         append_log(
                             config.log_dir,
                             "BATCH",
                             "stopped",
-                            compact_error(exc),
+                            error,
                         )
-
                         break
 
                     except Exception as exc:
                         failed_files += 1
                         consecutive_failures += 1
+                        error = compact_error(exc)
+
+                        if manifest is not None:
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                relative_path,
+                                status="failed",
+                                error=error,
+                            )
 
                         append_log(
                             config.log_dir,
-                            plan.relative_path.as_posix(),
+                            relative_path,
                             "file_failed",
                             {
-                                "error": (
-                                    compact_error(exc)
-                                ),
+                                "error": error,
                                 "consecutive_failures": (
                                     consecutive_failures
                                 ),
                             },
                         )
-
                         print(
                             f"\n[文件失败] "
                             f"{plan.relative_path}"
                         )
-                        print(
-                            f"错误："
-                            f"{compact_error(exc)}"
-                        )
+                        print(f"错误：{error}")
 
                         if (
                             consecutive_failures
                             >= MAX_CONSECUTIVE_FAILURES
                         ):
                             stopped = True
-
                             print(
                                 "\n[自动停止] "
                                 "连续文件失败达到阈值。"
                             )
-
                             break
 
-                        print(
-                            "继续处理下一个文件。"
-                        )
+                        print("继续处理下一个文件。")
+
+        if manifest is not None:
+            finalize_manifest(
+                config.log_dir,
+                manifest,
+                stopped=stopped,
+            )
+            failed_files = (
+                manifest["counts"]["failed"]
+            )
 
     finally:
-        if not config.dry_run:
-            release_lock(
-                config.lock_file
-            )
+        if lock_acquired:
+            release_lock(config.lock_file)
 
     print()
     print("=" * 70)
