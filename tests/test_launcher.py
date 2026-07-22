@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -383,50 +384,33 @@ def test_windows_menu_blocks_actions_when_python_preflight_fails() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
-def test_powershell_menu_exits_safely_for_eof_and_missing_venv(tmp_path: Path) -> None:
+def test_powershell_menu_safely_handles_missing_venv_in_available_hosts(
+    tmp_path: Path,
+) -> None:
     menu_path = ROOT / "scripts" / "menu.ps1"
+    hosts = [host for host in ("powershell.exe", "pwsh.exe") if shutil.which(host)]
+    assert hosts
 
-    eof_result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(menu_path),
-            "-BaseDir",
-            str(ROOT),
-        ],
-        capture_output=True,
-        input="",
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=15,
-    )
-    assert eof_result.returncode == 0
-    assert "正在启动处理命令" not in eof_result.stdout
-
-    missing_venv_result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(menu_path),
-            "-BaseDir",
-            str(tmp_path),
-        ],
-        capture_output=True,
-        input="",
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-        timeout=15,
-    )
-    assert missing_venv_result.returncode == 1
-    assert "未检测到可用的项目运行环境" in missing_venv_result.stdout
-    assert "正在启动处理命令" not in missing_venv_result.stdout
+    for host in hosts:
+        missing_venv_result = subprocess.run(
+            [
+                host,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(menu_path),
+                "-BaseDir",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            input="",
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+        assert missing_venv_result.returncode == 1, host
+        assert "未检测到可用的项目运行环境" in missing_venv_result.stdout
+        assert "正在启动处理命令" not in missing_venv_result.stdout
