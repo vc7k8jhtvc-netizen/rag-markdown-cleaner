@@ -4,6 +4,14 @@
 
 Current branch: `release/v1.6.1`
 
+## v1.6.1 Release (2026-07-23)
+
+- [x] v1.6.1 于 2026-07-23 正式发布；标签：`v1.6.1`。
+- main 发布提交：`18785143656d7b27d8ed96df8365661d2f4ebce6`。
+- GitHub Release 已创建并设为 latest；未上传 PyPI。
+- GitHub Source ZIP 的 Windows launcher CRLF 热修复已发布。
+- 下一阶段：中文菜单、一键安装环境、菜单精简。
+
 Phase 1:
 
 - [x] CRLF 保真处理
