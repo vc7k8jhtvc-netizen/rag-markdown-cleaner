@@ -9,6 +9,7 @@ import pytest
 
 from clean_auto.api_client import (
     ApiClient,
+    build_user_message,
     extract_content,
     parse_retry_after,
 )
@@ -250,6 +251,74 @@ def test_successful_sse_stream(
         "清洗后的安全生产教材正文。"
     )
     assert result.truncated is False
+
+
+def test_crlf_chunk_is_preserved_in_api_user_message(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    disable_model_budget(
+        monkeypatch
+    )
+    chunk = "# 标题\r\n\r\n第一段正文。\r\n"
+    user_message = build_user_message(
+        chunk=chunk,
+        part_number=1,
+        total_parts=1,
+        relative_path=Path("source.md"),
+    )
+    received_user_messages: list[str] = []
+
+    def handler(
+        request: httpx.Request,
+    ) -> httpx.Response:
+        payload = json.loads(
+            request.content.decode("utf-8")
+        )
+        received_user_message = payload[
+            "messages"
+        ][1]["content"]
+        received_user_messages.append(
+            received_user_message
+        )
+
+        assert received_user_message == user_message
+        assert chunk in received_user_message
+
+        return build_sse_response(
+            request,
+            text="清洗后的正文。",
+        )
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    install_mock_transport(
+        client,
+        handler,
+    )
+
+    try:
+        client.stream_request(
+            system_prompt="系统提示词",
+            user_message=user_message,
+            file_index=1,
+            total_files=1,
+            part_number=1,
+            total_parts=1,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            partial_path=tmp_path / "partial.md",
+            sleep_fn=lambda *_args: None,
+        )
+    finally:
+        client.close()
+
+    assert received_user_messages == [
+        user_message
+    ]
 
 
 def test_http_429_is_retried(
