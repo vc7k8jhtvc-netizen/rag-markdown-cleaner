@@ -12,6 +12,7 @@ if ([string]::IsNullOrWhiteSpace($BaseDir)) {
 $BaseDir = [System.IO.Path]::GetFullPath($BaseDir)
 $VenvPython = Join-Path $BaseDir ".venv\Scripts\python.exe"
 $SelectorScript = Join-Path $PSScriptRoot "select_input_files.ps1"
+$InstallerBatch = Join-Path $BaseDir "一键安装.bat"
 $Workers = 1
 
 function Pause-Menu {
@@ -65,8 +66,21 @@ function Test-ProjectPython {
 function Show-EnvironmentRequired {
     Write-Host ""
     Write-Host "未检测到可用的项目运行环境。"
-    Write-Host "请运行未来的 一键安装.bat 完成环境配置后，再重新打开菜单。"
-    Write-Host "本阶段安装器尚未提供；不会使用系统 Python，也不会启动处理任务。"
+    Write-Host "请运行一键安装.bat 完成环境配置后，再重新打开菜单。"
+    Write-Host "不会使用系统 Python，也不会启动处理任务。"
+}
+
+function Invoke-Installer {
+    if (-not (Test-Path -LiteralPath $InstallerBatch -PathType Leaf)) {
+        Write-Host "未找到一键安装.bat，未执行任何操作。"
+        Pause-Menu
+        return
+    }
+    Write-Host "正在启动一键安装.bat..."
+    & $InstallerBatch
+    $exitCode = $LASTEXITCODE
+    Write-Host "安装器已返回，退出码：$exitCode"
+    Pause-Menu
 }
 
 function Invoke-Cleaner {
@@ -238,12 +252,6 @@ function Show-MoreMenu {
     }
 }
 
-if (-not (Test-ProjectPython)) {
-    Show-EnvironmentRequired
-    Pause-Menu
-    exit 1
-}
-
 while ($true) {
     Clear-Host
     Write-Host "========================================"
@@ -259,6 +267,10 @@ while ($true) {
     Write-Host "7. 安装或修复运行环境"
     Write-Host "8. 更多功能"
     Write-Host "0. 退出"
+    if (-not (Test-ProjectPython)) {
+        Write-Host ""
+        Write-Host "提示：当前缺少可用 .venv，请选择 7 安装或修复运行环境。"
+    }
 
     $choice = Read-MenuChoice -Prompt "请输入选项"
     if ($null -eq $choice -or $choice -eq "0") { exit 0 }
@@ -269,7 +281,7 @@ while ($true) {
         "4" { Invoke-Cleaner -Arguments @("--batch-status") }
         "5" { Set-MenuWorkers }
         "6" { Open-MenuDirectory -Path (Join-Path $BaseDir "output") }
-        "7" { Write-Host "安装器将在下一阶段提供。本阶段不会创建环境或修改系统设置。"; Pause-Menu }
+        "7" { Invoke-Installer }
         "8" { Show-MoreMenu }
         default { Write-Host "输入无效，未执行操作。"; Pause-Menu }
     }

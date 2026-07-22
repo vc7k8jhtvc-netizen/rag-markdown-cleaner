@@ -2,7 +2,15 @@
 
 ## Current State
 
-Current branch: `feature/chinese-menu`
+Current branch: `feature/install-environment`
+
+## v1.7.0 Phase 3: Windows Environment Installer (2026-07-23)
+
+- [x] 新增 ASCII、无 BOM、CRLF 的 `一键安装.bat`，只负责定位项目根目录和启动 PowerShell 安装脚本。
+- [x] 新增 UTF-8 with BOM、CRLF 的 `scripts/install_environment.ps1`，优先检测 `py -3`，再检测 `python.exe`，只接受 Python 3.10+。
+- [x] 安装器只使用项目内 `.venv` 和 `.venv\\Scripts\\python.exe -m pip`；健康环境不删除，损坏环境必须明确确认后才重建。
+- [x] 菜单第 7 项已调用项目根目录的一键安装器；缺少 `.venv` 时保留安全提示和安装入口，不回退系统 Python。
+- [x] 已补充 Source ZIP 与 wheel 的安装说明、编码契约测试和无真实 venv/网络的自动化契约测试。
 
 ## v1.7.0 Phase 2: Chinese PowerShell Menu (2026-07-23)
 
