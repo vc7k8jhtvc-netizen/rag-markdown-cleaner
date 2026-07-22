@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current branch: `feature/batch-concurrency`
+Current branch: `release/v1.6.0`
 
 Phase 1:
 
@@ -16,6 +16,13 @@ Phase 2:
 - 本阶段未修改生产代码。
 
 Next stage:
+
+- [x] v1.6.0 正式发布文档已完成，等待最终合并、标签与 GitHub Release；尚未正式发布。
+  功能已在 develop 合并提交
+  `2163d4b9ae47fa2e812ac2d821e5176d5f78c335`，远端 CI 已全部通过。
+- 五个 v1.6.0 开发阶段已完成：`--selection-file`、串行 manifest/resume、workers 并发与
+  API 协调、retry-failed 子批次、Windows 菜单接入。当前测试为 273 passed。
+- 下一步：将 release/v1.6.0 合并到 main，验证后创建 v1.6.0 标签和 GitHub Release。
 
 - [x] v1.5.0 已于 2026-07-22 正式发布
 - 软件版本以 `pyproject.toml` 为权威来源，已从此前基线 `1.4.1` 向前递增至
@@ -43,7 +50,7 @@ Next stage:
   子目录选择、会话级 workers 1-5、resume latest、retry failed latest、只读 batch
   status，以及 input/output/logs 工作目录入口。选择范围仍仅限 `input/` 及其子目录，
   PowerShell 只生成 selection JSON，Python 层继续执行最终路径安全校验。
-- v1.6.0 尚未合并到 `develop`，也尚未发布。
+- v1.6.0 功能已合并到 `develop`，尚未合并到 `main`，也尚未发布。
 
 ## Git History
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.6.0] - 2026-07-23
+
+### Added
+
+- `--selection-file`：使用经过验证的 JSON 清单处理指定 Markdown 文件
+- 批次 manifest 历史和 latest 批次引用
+- `--resume-batch [BATCH_ID]`：继续 pending/interrupted 文件
+- `--retry-failed [BATCH_ID]`：为失败文件创建独立重试子批次
+- `--workers 1-5`：有界文件级并发，默认 1
+- `--batch-status`：只读查看最近批次状态
+- Windows 一键菜单：多选 Markdown、选择 input 子目录、设置并发、继续、重试和查看状态
+- Windows PowerShell 文件/目录选择辅助脚本及文本降级路径
+
+### Changed
+
+- 批处理现在支持批次状态、恢复、失败隔离和受限并发
+- workers=1 保持原串行处理行为；workers>1 按文件级并发处理，单文件内 chunks 保持顺序
+- 并发模式共享 API 冷却、限制网络请求并保护 JSONL 日志写入
+
+### Safety / Compatibility
+
+- 选择文件仍仅允许 input/ 及其子目录；Python 层执行路径、符号链接、Markdown 和 cleaned 文件校验
+- 并发范围限制为 1-5；单文件 metadata、缓存、输出布局和 chunking 契约不变
+- 并发模式不支持 dry-run 或文件间暂停；workers=1 保留原有串行连续失败停止行为
+
+### Known limitations
+
+- PowerShell GUI 选择器仅适用于 Windows；不可用时使用文本降级或 CLI selection-file
+- workers 设置仅在当前一键菜单会话有效
+- 不支持 input/ 外文件选择、复杂桌面 GUI、拖放或 chunk 级并发
+- cleaned 输出仍采用 UTF-8 和现有组装规则；prompt.md 仍是用户工作目录中的外部必需配置
+
 ## [1.5.0] - 2026-07-22
 
 ### Changed
