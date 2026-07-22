@@ -63,7 +63,7 @@
 - 接口支持 `POST /chat/completions`；
 - 接口支持流式响应。
 
-项目 CI 已验证：
+项目 CI 配置覆盖：
 
 ```text
 Python 3.10
@@ -112,6 +112,32 @@ python -m venv .venv
 
 ## 配置
 
+### 工作目录与 prompt.md
+
+`prompt.md` 是用户工作目录中的必需外部配置，不包含在 wheel 中。程序按以下优先级
+确定工作目录，并从该目录读取 `prompt.md`：
+
+1. `--base-dir` 指定的目录；
+2. `RAG_CLEANER_HOME` 环境变量指定的目录；
+3. 当前工作目录。
+
+使用显式工作目录的最小示例：
+
+```powershell
+.\.venv\Scripts\python.exe -m clean_auto `
+  --base-dir "D:\RagCleanerWorkspace" `
+  --dry-run
+```
+
+也可以使用环境变量：
+
+```powershell
+$env:RAG_CLEANER_HOME = "D:\RagCleanerWorkspace"
+.\.venv\Scripts\python.exe -m clean_auto --dry-run
+```
+
+所选工作目录中必须存在 `prompt.md`。缺少该文件时，程序会报告预期文件的完整路径。
+
 复制配置模板：
 
 ```powershell
@@ -138,6 +164,18 @@ OPENAI_MODEL=你的模型名称
 - 将 API Key 写入 Python 代码；
 - 将 API Key 放入 Base URL 查询参数；
 - 使用已经泄露的旧 API Key。
+
+### 输入编码与分块保真
+
+输入文本按 `utf-8-sig`、`utf-8`、`gb18030`、`gbk` 的顺序尝试解码。
+读取过程保留 CRLF、LF 和混合换行。分块保证：
+
+```python
+"".join(chunks) == source_text
+```
+
+这里的 `source_text` 是解码后传给 chunking 的完整文本。该保证不表示 cleaned 文件与源文件
+字节完全一致；cleaned 输出继续使用现有 UTF-8 和组装规则，也不承诺继承源文件编码。
 
 ## 可选模型预算
 
@@ -357,7 +395,7 @@ New-Item .\stop.flag -ItemType File -Force
 .\.venv\Scripts\python.exe -m ruff check clean_auto tests
 ```
 
-GitHub Actions 会在推送和 Pull Request 时自动验证：
+GitHub Actions 配置会在 Windows 和 Linux 上验证：
 
 ```text
 Python 3.10
@@ -370,7 +408,7 @@ Python 3.14
 当前版本：
 
 ```text
-1.4.1
+1.5.0（发布候选，尚未正式发布）
 ```
 
 版本发布：
