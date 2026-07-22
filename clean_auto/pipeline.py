@@ -11,6 +11,7 @@ from .batch_manifest import (
     create_retry_manifest,
     file_status,
     finalize_manifest,
+    load_latest_manifest,
     load_retry_parent,
     load_resume_manifest,
     prepare_resume,
@@ -34,6 +35,7 @@ from .config import (
     append_log,
     compact_error,
     get_base_dir,
+    get_paths,
     load_runtime_config,
     parse_args,
     read_text,
@@ -286,11 +288,58 @@ def _resume_source_paths(
     return source_paths
 
 
+def _show_latest_batch_status(
+    log_dir: Path,
+) -> None:
+    manifest = load_latest_manifest(log_dir)
+    if manifest is None:
+        print("暂无批次记录")
+        return
+
+    print("最近批次状态")
+    for field in (
+        "batch_id",
+        "status",
+        "workers",
+    ):
+        print(f"{field}: {manifest[field]}")
+    for field in (
+        "total",
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "skipped",
+        "interrupted",
+    ):
+        print(f"{field}: {manifest['counts'][field]}")
+    for field in (
+        "created_at",
+        "updated_at",
+    ):
+        print(f"{field}: {manifest[field]}")
+
+
 def main(
     argv: list[str] | None = None,
 ) -> None:
     args = parse_args(argv)
     validate_args(args)
+
+    if getattr(args, "batch_status", False):
+        if getattr(args, "base_dir", ""):
+            status_base_dir = (
+                Path(args.base_dir)
+                .expanduser()
+                .resolve()
+            )
+        else:
+            status_base_dir = get_base_dir()
+        _show_latest_batch_status(
+            get_paths(status_base_dir)["log_dir"]
+        )
+        return
+
     resume_value = getattr(
         args,
         "resume_batch",

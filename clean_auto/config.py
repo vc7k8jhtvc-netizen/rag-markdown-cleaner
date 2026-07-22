@@ -646,6 +646,11 @@ def parse_args(
             "省略 batch ID 时使用 latest"
         ),
     )
+    parser.add_argument(
+        "--batch-status",
+        action="store_true",
+        help="显示 latest 批次的只读状态摘要",
+    )
 
     strict_group = (
         parser.add_mutually_exclusive_group()
@@ -747,6 +752,23 @@ def validate_args(
         "retry_failed",
         "",
     )
+    batch_status = getattr(
+        args,
+        "batch_status",
+        False,
+    )
+
+    if batch_status and any(
+        (
+            resume_batch,
+            retry_failed,
+            getattr(args, "selection_file", ""),
+            getattr(args, "dry_run", False),
+        )
+    ):
+        raise RuntimeError(
+            "--batch-status 不能与处理、恢复、重试或 dry-run 模式同时使用"
+        )
 
     if (
         retry_failed

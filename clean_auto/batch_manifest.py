@@ -603,6 +603,17 @@ def load_resume_manifest(
     return load_manifest(log_dir, batch_id)
 
 
+def load_latest_manifest(
+    log_dir: Path,
+) -> dict[str, Any] | None:
+    if not latest_path(log_dir).exists():
+        return None
+    return load_manifest(
+        log_dir,
+        _load_latest_id(log_dir),
+    )
+
+
 def load_retry_parent(
     log_dir: Path,
     requested: str,

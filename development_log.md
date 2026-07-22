@@ -39,7 +39,11 @@ Next stage:
 - v1.6.0 第四阶段已完成：新增 `--retry-failed [BATCH_ID]`，可重试 latest 或指定父批次
   中的 `failed` 文件，并创建独立子批次保留父批次历史；支持当前 `workers` 和
   `--max-files`，未调度项可继续通过 `--resume-batch` 处理。
-- 一键菜单、多文件选择器和目录选择器尚未接入。
+- v1.6.0 第五阶段已完成：Windows 一键菜单已接入处理全部文件、`input/` 内多文件和
+  子目录选择、会话级 workers 1-5、resume latest、retry failed latest、只读 batch
+  status，以及 input/output/logs 工作目录入口。选择范围仍仅限 `input/` 及其子目录，
+  PowerShell 只生成 selection JSON，Python 层继续执行最终路径安全校验。
+- v1.6.0 尚未合并到 `develop`，也尚未发布。
 
 ## Git History
 
@@ -71,6 +75,9 @@ Next stage:
 - 2026-07-22: v1.6.0 第四阶段完成 `--retry-failed [BATCH_ID]`；仅按父批次原始顺序
   选择 `failed` 文件，创建带 `parent_batch_id` 的独立子批次，支持 latest、显式 batch
   ID、`workers`、`--max-files`、stop 和后续 resume，且不修改父批次历史。
+- 2026-07-23: v1.6.0 第五阶段完成 Windows 一键菜单批次控制；保留原菜单 1-7 编号，
+  新增多文件/子目录选择、workers、resume、retry、batch status 和 logs 目录入口。
+  selection JSON 原子写入 `logs/selections/` 并保留审计，Python 安全边界保持不变。
 
 ## Known Issues
 
@@ -79,7 +86,7 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 259 passed
+- `pytest -q`: 273 passed
 - `ruff check clean_auto tests`: All checks passed
 - `python -m build`: wheel 和 sdist 构建成功
 - `python -m twine check dist/*`: wheel 和 sdist 均通过
@@ -136,6 +143,13 @@ v1.6.0 第四阶段新增覆盖：
 - 空重试 no-op、重新规划和 source hash、缓存跳过、失败隔离、并发上限、stop 与 resume
 - 缺失源文件、损坏 latest/manifest，以及越界、绝对、UNC、驱动器、符号链接和非 Markdown
   历史路径的拒绝
+
+v1.6.0 第五阶段新增覆盖：
+
+- `--batch-status` 模式互斥、无 latest 成功返回、只读摘要和损坏 latest/manifest 错误
+- 状态输出字段完整且不泄露错误正文、prompt、源文件或敏感配置
+- Unicode、空格和 POSIX selection 路径消费，以及菜单/PowerShell 脚本的静态安全契约
+- Windows 菜单实际启动冒烟与 PowerShell 语法解析；Linux CI 不运行图形对话框
 
 ## Non-blocking Follow-ups
 
