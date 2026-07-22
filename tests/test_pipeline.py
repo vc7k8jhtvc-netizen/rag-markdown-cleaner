@@ -516,6 +516,88 @@ def test_one_file_exception_does_not_block_later_files(
     assert lock_events == ["acquire", "release"]
 
 
+def test_workers_one_preserves_order_and_file_pause_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, "first"), _make_plan(tmp_path, "second")]
+    config = _make_config(tmp_path)
+    config.workers = 1
+    config.pause_after_files = 1
+    config.pause_between_files = 0.25
+    _install_pipeline_inputs(monkeypatch, config, plans)
+    events: list[str] = []
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        events.append(f"process:{plan.relative_path.as_posix()}")
+        return ProcessOutcome(
+            stats=ProcessStats(total_parts=1, success_parts=1),
+            consecutive_failures=0,
+        )
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+    monkeypatch.setattr(pipeline, "ApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        pipeline,
+        "acquire_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "release_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "wait_for_enter_or_stop",
+        lambda *_args: events.append("pause-after"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "controlled_sleep",
+        lambda seconds, *_args: events.append(f"sleep:{seconds}"),
+    )
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    assert events == [
+        "process:first.md",
+        "pause-after",
+        "sleep:0.25",
+        "process:second.md",
+    ]
+
+
+def test_workers_one_keeps_five_file_failure_breaker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, f"file-{index}") for index in range(6)]
+    config = _make_config(tmp_path)
+    config.workers = 1
+    _install_pipeline_inputs(monkeypatch, config, plans)
+    calls: list[str] = []
+
+    def fail(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        calls.append(plan.relative_path.as_posix())
+        raise RuntimeError("file failed")
+
+    monkeypatch.setattr(pipeline, "process_file", fail)
+    monkeypatch.setattr(pipeline, "ApiClient", FakeApiClient)
+    monkeypatch.setattr(
+        pipeline,
+        "acquire_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "release_lock",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert _exit_code(lambda: pipeline.main([])) == 1
+    assert calls == [f"file-{index}.md" for index in range(5)]
+
+
 def test_planning_isolates_an_undecodable_file(
     tmp_path: Path,
 ) -> None:

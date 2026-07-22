@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +37,9 @@ class FakeApiClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
+    def configure_concurrency(self, workers: int) -> None:
+        assert 1 <= workers <= 5
+
 
 class SimulatedProcessCrash(BaseException):
     pass
@@ -61,6 +65,7 @@ def _make_config(
     *,
     dry_run: bool = False,
     max_files: int = 0,
+    workers: int = 1,
 ) -> RuntimeConfig:
     return RuntimeConfig(
         api_key="test-key",
@@ -80,6 +85,7 @@ def _make_config(
         lock_file=tmp_path / "run.lock",
         max_files=max_files,
         dry_run=dry_run,
+        workers=workers,
     )
 
 
@@ -572,6 +578,21 @@ def test_manifest_contains_no_prompt_source_or_sensitive_configuration(
     assert "test-key" not in serialized
 
 
+def test_manifest_records_valid_concurrent_worker_count(
+    tmp_path: Path,
+) -> None:
+    manifest = batch_manifest.create_manifest(
+        log_dir=tmp_path / "logs",
+        relative_paths=["a.md"],
+        selection_source="scan",
+        workers=5,
+        batch_id=BATCH_ID,
+        timestamp=FIXED_TIME,
+    )
+    assert manifest["workers"] == 5
+    assert batch_manifest.validate_manifest(manifest)["workers"] == 5
+
+
 def test_non_dry_scan_creates_completed_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -689,6 +710,215 @@ def test_file_failure_isolated_and_manifest_completed_with_failures(
     assert manifest["status"] == "completed_with_failures"
     assert manifest["counts"]["failed"] == 1
     assert "sk-secret-value" not in json.dumps(manifest)
+
+
+def test_concurrent_pipeline_keeps_manifest_order_and_failure_isolation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [
+        _make_plan(tmp_path, "first.md"),
+        _make_plan(tmp_path, "second.md"),
+        _make_plan(tmp_path, "third.md"),
+    ]
+    config = _make_config(tmp_path, workers=2)
+    _install_pipeline(monkeypatch, config, plans)
+    barrier = threading.Barrier(2)
+    calls: list[str] = []
+    guard = threading.Lock()
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        current = _latest_manifest(config.log_dir)
+        current_item = next(
+            item
+            for item in current["files"]
+            if item["path"] == plan.relative_path.as_posix()
+        )
+        assert current_item["status"] == "running"
+        with guard:
+            calls.append(plan.relative_path.as_posix())
+        if plan is not plans[2]:
+            barrier.wait(timeout=2)
+        if plan is plans[1]:
+            raise RuntimeError("second failed")
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 2
+    manifest = _latest_manifest(config.log_dir)
+    assert sorted(calls) == ["first.md", "second.md", "third.md"]
+    assert [item["path"] for item in manifest["files"]] == [
+        "first.md",
+        "second.md",
+        "third.md",
+    ]
+    assert [item["status"] for item in manifest["files"]] == [
+        "succeeded",
+        "failed",
+        "succeeded",
+    ]
+    assert manifest["workers"] == 2
+    assert manifest["counts"]["failed"] == 1
+    assert manifest["status"] == "completed_with_failures"
+
+
+def test_concurrent_cache_hit_is_skipped_without_entering_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached = _make_plan(tmp_path, "cached.md")
+    pending = _make_plan(tmp_path, "pending.md")
+    config = _make_config(tmp_path, workers=2)
+    _install_pipeline(monkeypatch, config, [cached, pending])
+
+    monkeypatch.setattr(
+        pipeline,
+        "plan_has_pending_chunks",
+        lambda plan, **_kwargs: plan is pending,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "final_output_is_current",
+        lambda **_kwargs: True,
+    )
+    calls: list[str] = []
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        calls.append(plan.relative_path.as_posix())
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    manifest = _latest_manifest(config.log_dir)
+    assert calls == ["pending.md"]
+    assert [item["status"] for item in manifest["files"]] == [
+        "skipped",
+        "succeeded",
+    ]
+
+
+def test_source_change_cannot_be_hidden_by_final_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, "changed.md")
+    config = _make_config(tmp_path, workers=2)
+    _install_pipeline(monkeypatch, config, [plan])
+    plan.source_path.write_bytes(b"changed after planning\n")
+    monkeypatch.setattr(
+        pipeline,
+        "plan_has_pending_chunks",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "final_output_is_current",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "process_file",
+        lambda **_kwargs: pytest.fail("changed source must not call API"),
+    )
+
+    assert _exit_code(lambda: pipeline.main([])) == 2
+    manifest = _latest_manifest(config.log_dir)
+    assert manifest["files"][0]["status"] == "failed"
+    assert "SHA-256" in manifest["files"][0]["error"]
+
+
+def test_concurrent_stop_leaves_unsubmitted_files_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, f"{index}.md") for index in range(4)]
+    config = _make_config(tmp_path, workers=2)
+    _install_pipeline(monkeypatch, config, plans)
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        if plan is plans[0]:
+            config.stop_file.write_bytes(b"")
+            raise GracefulStop("stop now")
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 1
+    manifest = _latest_manifest(config.log_dir)
+    statuses = [item["status"] for item in manifest["files"]]
+    assert "running" not in statuses
+    assert statuses.count("interrupted") >= 1
+    assert statuses.count("pending") >= 2
+    assert manifest["counts"]["running"] == 0
+    assert manifest["status"] == "stopped"
+
+
+def test_cancelled_future_resets_running_manifest_item_to_pending(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    manifest = batch_manifest.create_manifest(
+        log_dir=log_dir,
+        relative_paths=["queued.md"],
+        selection_source="scan",
+        workers=2,
+        batch_id=BATCH_ID,
+        timestamp=FIXED_TIME,
+    )
+    batch_manifest.update_file(
+        log_dir,
+        manifest,
+        "queued.md",
+        status="running",
+        increment_attempts=True,
+        timestamp=FIXED_TIME,
+    )
+
+    batch_manifest.reset_cancelled_file(
+        log_dir,
+        manifest,
+        "queued.md",
+        timestamp=FIXED_TIME,
+    )
+
+    item = manifest["files"][0]
+    assert item["status"] == "pending"
+    assert item["attempts"] == 0
+    assert item["started_at"] is None
+    assert item["finished_at"] is None
+    assert manifest["counts"]["pending"] == 1
+    assert manifest["counts"]["running"] == 0
+
+
+def test_api_client_closes_after_concurrent_workers_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, "first.md"), _make_plan(tmp_path, "second.md")]
+    config = _make_config(tmp_path, workers=2)
+    _install_pipeline(monkeypatch, config, plans)
+    barrier = threading.Barrier(2)
+
+    class TrackingClient(FakeApiClient):
+        closed = False
+
+        def __exit__(self, *_args: object) -> None:
+            self.closed = True
+
+    client = TrackingClient()
+    monkeypatch.setattr(pipeline, "ApiClient", lambda *_args: client)
+
+    def process(**_kwargs: object) -> ProcessOutcome:
+        assert client.closed is False
+        barrier.wait(timeout=2)
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    assert client.closed is True
 
 
 def test_planning_failure_is_recorded_and_valid_file_continues(

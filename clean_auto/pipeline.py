@@ -12,6 +12,7 @@ from .batch_manifest import (
     finalize_manifest,
     load_resume_manifest,
     prepare_resume,
+    reset_cancelled_file,
     resumable_paths,
     update_file,
 )
@@ -48,6 +49,11 @@ from .processor import process_file
 from .selection import (
     load_selection_paths,
     resolve_selection_file,
+)
+from .scheduler import (
+    FileResult,
+    ensure_source_unchanged,
+    run_file_scheduler,
 )
 
 
@@ -388,6 +394,7 @@ def main(
             prepare_resume(
                 config.log_dir,
                 manifest,
+                workers=config.workers,
             )
             source_paths = _resume_source_paths(
                 manifest,
@@ -418,6 +425,7 @@ def main(
                 ],
                 selection_source=selection_source,
                 selection_file=selection_reference,
+                workers=config.workers,
             )
 
         if source_paths:
@@ -474,6 +482,7 @@ def main(
                 )
 
             try:
+                ensure_source_unchanged(plan)
                 has_pending_chunks = (
                     plan_has_pending_chunks(
                         plan=plan,
@@ -648,8 +657,111 @@ def main(
                 config.api_key,
                 config.model,
             ) as client:
+                if config.workers > 1:
+                    client.configure_concurrency(config.workers)
+
+                    def mark_started(
+                        _index: int,
+                        plan: FilePlan,
+                    ) -> None:
+                        if manifest is not None:
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                plan.relative_path.as_posix(),
+                                status="running",
+                                source_sha256=plan.source_sha256,
+                                increment_attempts=True,
+                            )
+
+                    def record_result(result: FileResult) -> None:
+                        nonlocal processed_files, failed_files, stopped
+                        stats = result.stats
+                        total_stats.total_parts += stats.total_parts
+                        total_stats.success_parts += stats.success_parts
+                        total_stats.failed_parts += stats.failed_parts
+                        total_stats.skipped_parts += stats.skipped_parts
+                        processed_files += 1
+                        relative_path = result.plan.relative_path.as_posix()
+
+                        if result.status == "failed":
+                            failed_files += 1
+                            if stats.failed_parts == 0:
+                                total_stats.failed_parts += 1
+                            if manifest is not None:
+                                update_file(
+                                    config.log_dir,
+                                    manifest,
+                                    relative_path,
+                                    status="failed",
+                                    error=result.error or "文件处理失败",
+                                )
+                            append_log(
+                                config.log_dir,
+                                relative_path,
+                                "file_failed",
+                                {"error": result.error or "文件处理失败"},
+                            )
+                        elif result.status == "interrupted":
+                            stopped = True
+                            if manifest is not None:
+                                update_file(
+                                    config.log_dir,
+                                    manifest,
+                                    relative_path,
+                                    status="interrupted",
+                                    error=result.error or "安全停止",
+                                )
+                        elif manifest is not None:
+                            update_file(
+                                config.log_dir,
+                                manifest,
+                                relative_path,
+                                status="succeeded",
+                            )
+
+                        if manifest is not None:
+                            counts = manifest["counts"]
+                            finished = (
+                                counts["succeeded"]
+                                + counts["failed"]
+                                + counts["skipped"]
+                                + counts["interrupted"]
+                            )
+                            print(
+                                f"[批次 {finished}/{counts['total']}] "
+                                f"成功 {counts['succeeded']} | "
+                                f"处理中 {counts['running']} | "
+                                f"失败 {counts['failed']} | "
+                                f"跳过 {counts['skipped']} | "
+                                f"待处理 {counts['pending']}"
+                            )
+
+                    def mark_cancelled(
+                        _index: int,
+                        plan: FilePlan,
+                    ) -> None:
+                        if manifest is not None:
+                            reset_cancelled_file(
+                                config.log_dir,
+                                manifest,
+                                plan.relative_path.as_posix(),
+                            )
+
+                    concurrent_summary = run_file_scheduler(
+                        selected_plans,
+                        config=config,
+                        client=client,
+                        workers=config.workers,
+                        process_fn=process_file,
+                        on_started=mark_started,
+                        on_result=record_result,
+                        on_cancelled=mark_cancelled,
+                    )
+                    stopped = stopped or concurrent_summary.stopped
+
                 for file_index, plan in enumerate(
-                    selected_plans,
+                    selected_plans if config.workers == 1 else [],
                     start=1,
                 ):
                     relative_path = (
@@ -661,6 +773,7 @@ def main(
                             config.pause_file,
                             config.stop_file,
                         )
+                        ensure_source_unchanged(plan)
 
                         if manifest is not None:
                             update_file(

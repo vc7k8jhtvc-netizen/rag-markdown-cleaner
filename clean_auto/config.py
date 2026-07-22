@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,10 @@ MAX_RETRY_WAIT_SECONDS = 300.0
 MAX_CONSECUTIVE_FAILURES = 5
 
 REQUIRE_CONFIRMATION = True
+MIN_WORKERS = 1
+MAX_WORKERS = 5
+
+_LOG_WRITE_LOCK = threading.Lock()
 
 # 教材清洗默认保留兼容性。
 # 使用 --strict 时，第一片必须有完整 Front Matter。
@@ -181,6 +186,7 @@ class RuntimeConfig:
     pause_after_files: int = 0
     max_files: int = 0
     dry_run: bool = False
+    workers: int = 1
 
 
 class GracefulStop(Exception):
@@ -197,10 +203,12 @@ class RetryableRequestError(RuntimeError):
         message: str,
         retry_after: float | None = None,
         partial_text: str = "",
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.retry_after = retry_after
         self.partial_text = partial_text
+        self.status_code = status_code
 
 
 def get_base_dir() -> Path:
@@ -562,26 +570,24 @@ def append_log(
             redact_secrets(raw)
         )
 
-    record = {
-        "time": now_iso(),
-        "file": redact_secrets(filename),
-        "status": status,
-        "detail": safe_detail,
-    }
+    with _LOG_WRITE_LOCK:
+        record = {
+            "time": now_iso(),
+            "file": redact_secrets(filename),
+            "status": status,
+            "detail": safe_detail,
+        }
+        serialized = json.dumps(
+            record,
+            ensure_ascii=False,
+        ) + "\n"
+        log_path = log_dir / "batch.jsonl"
 
-    log_path = log_dir / "batch.jsonl"
-
-    with log_path.open(
-        "a",
-        encoding="utf-8",
-    ) as file:
-        file.write(
-            json.dumps(
-                record,
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
+        with log_path.open(
+            "a",
+            encoding="utf-8",
+        ) as file:
+            file.write(serialized)
 
 
 def parse_args(
@@ -647,6 +653,12 @@ def parse_args(
         type=int,
         default=0,
         help="本次最多处理多少个文件；0 表示不限制",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="同时处理的文件数，范围 1-5，默认 1",
     )
     parser.add_argument(
         "--pause-between-files",
@@ -733,6 +745,23 @@ def validate_args(
     ):
         raise RuntimeError(
             "--resume-batch 不能与 --dry-run 同时使用"
+        )
+
+    workers = getattr(args, "workers", 1)
+    if not MIN_WORKERS <= workers <= MAX_WORKERS:
+        raise RuntimeError("--workers 必须是 1 到 5 之间的整数")
+
+    if workers > 1 and getattr(args, "dry_run", False):
+        raise RuntimeError("--workers 大于 1 时不能使用 --dry-run")
+
+    if workers > 1 and args.pause_after_files > 0:
+        raise RuntimeError(
+            "--workers 大于 1 时不能使用 --pause-after-files"
+        )
+
+    if workers > 1 and args.pause_between_files > 0:
+        raise RuntimeError(
+            "--workers 大于 1 时不能使用 --pause-between-files"
         )
 
     non_negative_values = {
@@ -905,4 +934,5 @@ def load_runtime_config(
         ),
         max_files=args.max_files,
         dry_run=bool(args.dry_run),
+        workers=getattr(args, "workers", 1),
     )

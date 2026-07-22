@@ -299,9 +299,14 @@ def validate_manifest(
             "批次 manifest 顶层状态无效"
         )
 
-    if manifest.get("workers") != 1:
+    workers = manifest.get("workers")
+    if (
+        not isinstance(workers, int)
+        or isinstance(workers, bool)
+        or not 1 <= workers <= 5
+    ):
         raise RuntimeError(
-            "当前批次 manifest workers 必须为 1"
+            "批次 manifest workers 必须是 1 到 5 之间的整数"
         )
 
     selection = manifest.get("selection")
@@ -433,10 +438,18 @@ def create_manifest(
     selection_source: str,
     selection_file: str | None = None,
     parent_batch_id: str | None = None,
+    workers: int = 1,
     *,
     batch_id: str | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
+    if (
+        not isinstance(workers, int)
+        or isinstance(workers, bool)
+        or not 1 <= workers <= 5
+    ):
+        raise RuntimeError("批次 workers 必须是 1 到 5 之间的整数")
+
     if selection_source not in SELECTION_SOURCES:
         raise RuntimeError(
             f"批次选择来源无效：{selection_source!r}"
@@ -481,7 +494,7 @@ def create_manifest(
         "updated_at": created_at,
         "completed_at": None,
         "status": "running",
-        "workers": 1,
+        "workers": workers,
         "selection": {
             "source": selection_source,
             "selection_file": selection_file,
@@ -677,10 +690,32 @@ def update_file(
     )
 
 
+def reset_cancelled_file(
+    log_dir: Path,
+    manifest: dict[str, Any],
+    relative_path: str,
+    *,
+    timestamp: str | None = None,
+) -> None:
+    changed_at = _timestamp(timestamp)
+    item = _find_file(manifest, relative_path)
+    item["status"] = "pending"
+    item["error"] = None
+    item["started_at"] = None
+    item["finished_at"] = None
+    item["attempts"] = max(0, item["attempts"] - 1)
+    write_manifest(
+        log_dir,
+        manifest,
+        timestamp=changed_at,
+    )
+
+
 def prepare_resume(
     log_dir: Path,
     manifest: dict[str, Any],
     *,
+    workers: int | None = None,
     timestamp: str | None = None,
 ) -> None:
     changed_at = _timestamp(timestamp)
@@ -692,6 +727,14 @@ def prepare_resume(
             item["finished_at"] = changed_at
 
     manifest["selection"]["source"] = "resume"
+    if workers is not None:
+        if (
+            not isinstance(workers, int)
+            or isinstance(workers, bool)
+            or not 1 <= workers <= 5
+        ):
+            raise RuntimeError("批次 workers 必须是 1 到 5 之间的整数")
+        manifest["workers"] = workers
     manifest["status"] = "running"
     manifest["completed_at"] = None
     write_manifest(

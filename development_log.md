@@ -30,8 +30,13 @@ Next stage:
   `logs/batches/<batch_id>.json` 保存独立 batch manifest，并通过
   `logs/batches/latest.json` 引用最近创建或恢复的批次。`--resume-batch` 只处理
   `pending` 和 `interrupted`，暂不自动重试 `failed`。
-- `workers=1` 继续保留现有连续失败停止规则。后续阶段的文件级并发、
-  `--retry-failed` 和一键菜单尚未实现。
+- v1.6.0 第三阶段已完成：新增 `--workers 1-5`（默认 1）；`workers=1` 继续使用原有
+  串行路径并保留暂停和连续 5 次失败停止规则，`workers>1` 使用有界文件级
+  `ThreadPoolExecutor`，单文件内 chunks 仍顺序处理且不启用跨文件失败熔断。
+- 并发处理由主线程维护 manifest 状态和进度；stop 后不再提交新文件，并尝试取消尚未
+  运行的 future。共享 `ApiClient` 限制活跃请求数，协调 429 冷却；JSONL 追加受进程内锁
+  保护，并在 worker 开始和 assembly 正式发布前检查源文件 SHA-256。
+- `--retry-failed` 和一键菜单尚未实现。
 
 ## Git History
 
@@ -57,6 +62,9 @@ Next stage:
 - 2026-07-22: v1.6.0 第二阶段完成串行 batch manifest、latest 指针和
   `--resume-batch`；恢复仅调度 `pending`/`interrupted`，保留 failed 历史和
   `workers=1` 的既有连续失败停止规则。文件并发、`--retry-failed` 和菜单尚未实现。
+- 2026-07-22: v1.6.0 第三阶段完成 `--workers 1-5` 和有界文件级线程池调度；保留
+  `workers=1` 串行兼容行为和单文件 chunk 顺序，新增 stop/cancel 状态协调、共享 API
+  请求上限与 429 冷却、并发 JSONL 写入保护和源文件双重 hash 发布保护。
 
 ## Known Issues
 
@@ -65,7 +73,7 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 204 passed
+- `pytest -q`: 233 passed
 - `ruff check clean_auto tests`: All checks passed
 - `python -m build`: wheel 和 sdist 构建成功
 - `python -m twine check dist/*`: wheel 和 sdist 均通过
@@ -105,6 +113,15 @@ v1.6.0 第二阶段新增覆盖：
 - 串行成功、缓存跳过、单文件失败隔离、停止和异常退出后的 interrupted 恢复
 - `--max-files` 未处理项保留、latest/显式 batch 恢复、当前源文件重新规划和 hash 检查
 - dry-run/空 selection 不创建批次状态，以及错误字段的限长、换行压平和敏感信息脱敏
+
+v1.6.0 第三阶段新增覆盖：
+
+- `--workers` 默认值、1-5 边界，以及 dry-run/文件间暂停冲突校验
+- `workers=1` 的顺序、暂停、退出码和连续 5 文件失败停止兼容行为
+- 文件级实际并发、有界 future、失败隔离、无并发文件熔断及输入顺序 manifest
+- final 缓存跳过、stop 后停止提交、future 取消回 pending 和 interrupted/counts 状态
+- 共享 `ApiClient` 请求并发上限、429 冷却、既有请求重试和客户端关闭时机
+- 多线程 JSONL 完整性，以及 worker 开始和 assembly 发布前的源文件 SHA-256 检查
 
 ## Non-blocking Follow-ups
 
