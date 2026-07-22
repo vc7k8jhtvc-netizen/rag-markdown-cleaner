@@ -1,0 +1,3 @@
+# Windows command scripts must retain CRLF in Git blobs and source archives.
+*.bat -text whitespace=cr-at-eol
+*.cmd -text whitespace=cr-at-eol
