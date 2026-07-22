@@ -2,3 +2,4 @@
 *.bat -text whitespace=cr-at-eol
 *.cmd -text whitespace=cr-at-eol
 scripts/menu.ps1 -text whitespace=cr-at-eol
+scripts/powershell_missing.txt -text whitespace=cr-at-eol

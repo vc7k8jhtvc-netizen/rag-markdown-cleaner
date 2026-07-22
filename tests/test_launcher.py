@@ -337,6 +337,7 @@ def test_windows_batch_files_have_archive_safe_crlf_bytes() -> None:
     assert "*.bat -text whitespace=cr-at-eol" in attributes
     assert "*.cmd -text whitespace=cr-at-eol" in attributes
     assert "scripts/menu.ps1 -text whitespace=cr-at-eol" in attributes
+    assert "scripts/powershell_missing.txt -text whitespace=cr-at-eol" in attributes
 
     batch_files = sorted(ROOT.glob("*.bat"))
     assert batch_files
