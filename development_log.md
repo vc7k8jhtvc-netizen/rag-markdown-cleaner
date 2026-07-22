@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current branch: `feature/encoding-preserve`
+Current branch: `release/v1.5.0`
 
 Phase 1:
 
@@ -17,7 +17,10 @@ Phase 2:
 
 Next stage:
 
-- v0.3.0 发布准备
+- [x] v1.5.0 发布准备完成（正式 tag 和 GitHub Release 尚未创建）
+- 软件版本以 `pyproject.toml` 为权威来源，已从此前基线 `1.4.1` 向前递增至
+  `1.5.0`；原 v0.3.0 发布规划已纠正。Phase 1、Phase 2 是开发阶段编号，不是软件版本号。
+- 下一步为创建 v1.5.0 正式标签与 GitHub Release。
 
 ## Git History
 
@@ -28,7 +31,12 @@ Next stage:
 - 2026-07-22: `feature/encoding-preserve` 完成 Phase 2 第二批编码与 CRLF 端到端测试，
   覆盖规划、分片、处理、组装、缓存恢复和失败重试流程；未修改生产代码。
 - 2026-07-22: Phase 2 编码与换行保真范围审查通过，已达到可合并标准；下一阶段为
-  v0.3.0 发布准备。
+  v1.5.0 发布候选准备。
+- 2026-07-22: 发布规划按权威包版本 `1.4.1` 向前递增，原 v0.3.0 计划纠正为
+  v1.5.0；开发阶段编号与软件版本号分开管理。
+- 2026-07-22: v1.5.0 发布候选准备完成；同步项目、运行时和 README 版本，新增
+  CHANGELOG、版本一致性测试、外部 `prompt.md` 配置测试，以及 Windows/Linux CI
+  和 wheel/sdist 构建检查。`prompt.md` 保持为用户工作目录中的外部必需配置。
 
 ## Known Issues
 
@@ -37,8 +45,10 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 135 passed
+- `pytest -q`: 139 passed
 - `ruff check clean_auto tests`: All checks passed
+- `python -m build`: wheel 和 sdist 构建成功
+- `python -m twine check dist/*`: wheel 和 sdist 均通过
 
 新增覆盖：
 
