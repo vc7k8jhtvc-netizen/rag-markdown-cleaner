@@ -1,4 +1,4 @@
-﻿# RAG Markdown Cleaner
+# RAG Markdown Cleaner
 
 面向**中级注册安全工程师 AI 学习知识库**的 PDF/OCR Markdown 教材清洗工具。
 
