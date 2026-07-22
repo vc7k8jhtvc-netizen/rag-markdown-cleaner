@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +18,48 @@ from .config import (
 
 
 FENCE_START_PATTERN = re.compile(
-    r"^[ \t]*(?P<fence>`{3,}|~{3,})"
+    r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})"
 )
 
 SENTENCE_END_PATTERN = re.compile(
     r"[。！？；.!?;][ \t]*"
 )
+
+LINE_END_PATTERN = re.compile(
+    r"(?:\r\n|\n|\r)$"
+)
+
+BLANK_LINE_PATTERN = re.compile(
+    r"^[ \t]*(?:\r\n|\n|\r)?$"
+)
+
+LIST_ITEM_PATTERN = re.compile(
+    r"^(?P<indent>[ \t]*)"
+    r"(?:[-+*]|\d{1,9}[.)])"
+    r"(?=[ \t])"
+)
+
+BLOCKQUOTE_PATTERN = re.compile(
+    r"^ {0,3}>"
+)
+
+BLANK_BLOCKQUOTE_PATTERN = re.compile(
+    r"^ {0,3}>[ \t]*$"
+)
+
+FRONT_MATTER_OPEN_PATTERN = re.compile(
+    r"^\ufeff?---[ \t]*$"
+)
+
+FRONT_MATTER_CLOSE_PATTERN = re.compile(
+    r"^---[ \t]*$"
+)
+
+
+@dataclass(frozen=True)
+class _MarkdownBlock:
+    text: str
+    kind: str
 
 
 def is_cleaned_file(path: Path) -> bool:
@@ -106,21 +143,75 @@ def find_input_files(
     )
 
 
+def _line_content(line: str) -> str:
+    """Return a line without changing any content before its line ending."""
+    return LINE_END_PATTERN.sub("", line, count=1)
+
+
+def _is_blank_line(line: str) -> bool:
+    return BLANK_LINE_PATTERN.fullmatch(line) is not None
+
+
+def _leading_indent_width(line: str) -> int:
+    width = 0
+
+    for character in _line_content(line):
+        if character == " ":
+            width += 1
+            continue
+
+        if character == "\t":
+            width += 4 - (width % 4)
+            continue
+
+        break
+
+    return width
+
+
+def _is_indented_code_line(line: str) -> bool:
+    return (
+        not _is_blank_line(line)
+        and _leading_indent_width(line) >= 4
+    )
+
+
+def _list_item_indent(line: str) -> int | None:
+    match = LIST_ITEM_PATTERN.match(
+        _line_content(line)
+    )
+
+    if match is None:
+        return None
+
+    return _leading_indent_width(
+        match.group("indent")
+    )
+
+
+def _is_blockquote_line(line: str) -> bool:
+    return BLOCKQUOTE_PATTERN.match(
+        _line_content(line)
+    ) is not None
+
+
+def _is_blank_blockquote_line(line: str) -> bool:
+    return BLANK_BLOCKQUOTE_PATTERN.fullmatch(
+        _line_content(line)
+    ) is not None
+
+
 def _fence_marker(
     line: str,
 ) -> tuple[str, int] | None:
     """
-    返回 Markdown 围栏的字符和长度。
+    返回 CommonMark 围栏的字符和长度。
 
-    支持：
-
-    ```python
-    内容
-    ```
-
-    以及波浪线围栏。
+    围栏最多允许三个前导空格；四个空格时属于缩进代码块。
     """
-    match = FENCE_START_PATTERN.match(line)
+    match = FENCE_START_PATTERN.match(
+        _line_content(line)
+    )
 
     if not match:
         return None
@@ -135,121 +226,376 @@ def _is_fence_close(
     marker_char: str,
     marker_length: int,
 ) -> bool:
-    stripped = line.strip()
-
-    if not stripped:
-        return False
-
-    if not stripped.startswith(
-        marker_char * marker_length
-    ):
-        return False
-
-    return all(
-        character == marker_char
-        for character in stripped
+    pattern = re.compile(
+        rf"^ {{0,3}}"
+        rf"{re.escape(marker_char)}"
+        rf"{{{marker_length},}}[ \t]*$"
     )
+
+    return pattern.fullmatch(
+        _line_content(line)
+    ) is not None
+
+
+def _consume_fenced_block(
+    lines: list[str],
+    index: int,
+) -> int:
+    fence_info = _fence_marker(lines[index])
+
+    if fence_info is None:
+        return index + 1
+
+    marker_char, marker_length = fence_info
+    index += 1
+
+    while index < len(lines):
+        current = lines[index]
+        index += 1
+
+        if _is_fence_close(
+            current,
+            marker_char,
+            marker_length,
+        ):
+            break
+
+    return index
+
+
+def _consume_indented_code(
+    lines: list[str],
+    index: int,
+) -> int:
+    """Include internal blank lines but leave trailing separators outside."""
+    cursor = index
+    last_code_end = index
+
+    while cursor < len(lines):
+        current = lines[cursor]
+
+        if _is_indented_code_line(current):
+            cursor += 1
+            last_code_end = cursor
+            continue
+
+        if _is_blank_line(current):
+            cursor += 1
+            continue
+
+        break
+
+    return last_code_end
+
+
+def _consume_list_items(
+    lines: list[str],
+    index: int,
+) -> tuple[list[_MarkdownBlock], int]:
+    """Return complete top-level list items without splitting nested content."""
+    base_indent = _list_item_indent(lines[index])
+
+    if base_indent is None:
+        return [], index + 1
+
+    blocks: list[_MarkdownBlock] = []
+    item_start = index
+    cursor = index + 1
+
+    while cursor < len(lines):
+        current = lines[cursor]
+
+        if _is_blank_line(current):
+            blank_start = cursor
+
+            while (
+                cursor < len(lines)
+                and _is_blank_line(lines[cursor])
+            ):
+                cursor += 1
+
+            if cursor >= len(lines):
+                blocks.append(
+                    _MarkdownBlock(
+                        text="".join(
+                            lines[item_start:blank_start]
+                        ),
+                        kind="list_item",
+                    )
+                )
+                return blocks, blank_start
+
+            next_indent = _list_item_indent(
+                lines[cursor]
+            )
+
+            if (
+                next_indent is not None
+                and next_indent > base_indent
+            ):
+                cursor += 1
+                continue
+
+            if (
+                next_indent is None
+                and _leading_indent_width(
+                    lines[cursor]
+                ) > base_indent
+            ):
+                cursor += 1
+                continue
+
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(
+                        lines[item_start:blank_start]
+                    ),
+                    kind="list_item",
+                )
+            )
+            return blocks, blank_start
+
+        next_indent = _list_item_indent(current)
+
+        if next_indent == base_indent:
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(
+                        lines[item_start:cursor]
+                    ),
+                    kind="list_item",
+                )
+            )
+            item_start = cursor
+            cursor += 1
+            continue
+
+        if (
+            next_indent is not None
+            and next_indent < base_indent
+        ):
+            break
+
+        cursor += 1
+
+    blocks.append(
+        _MarkdownBlock(
+            text="".join(lines[item_start:cursor]),
+            kind="list_item",
+        )
+    )
+
+    return blocks, cursor
+
+
+def _is_structural_start(line: str) -> bool:
+    list_indent = _list_item_indent(line)
+
+    return (
+        _fence_marker(line) is not None
+        or (
+            list_indent is not None
+            and list_indent <= 3
+        )
+        or _is_blockquote_line(line)
+    )
+
+
+def _consume_blockquote_paragraphs(
+    lines: list[str],
+    index: int,
+) -> tuple[list[_MarkdownBlock], int]:
+    """Split a quote only after an explicit quoted blank line."""
+    blocks: list[_MarkdownBlock] = []
+    paragraph_start = index
+    cursor = index
+
+    while cursor < len(lines):
+        current = lines[cursor]
+
+        if _is_blank_line(current):
+            break
+
+        if _is_blockquote_line(current):
+            cursor += 1
+
+            if _is_blank_blockquote_line(current):
+                blocks.append(
+                    _MarkdownBlock(
+                        text="".join(
+                            lines[paragraph_start:cursor]
+                        ),
+                        kind="blockquote",
+                    )
+                )
+                paragraph_start = cursor
+
+            continue
+
+        if _is_structural_start(current):
+            break
+
+        # CommonMark permits lazy continuation lines in a blockquote paragraph.
+        cursor += 1
+
+    if paragraph_start < cursor:
+        blocks.append(
+            _MarkdownBlock(
+                text="".join(
+                    lines[paragraph_start:cursor]
+                ),
+                kind="blockquote",
+            )
+        )
+
+    return blocks, cursor
+
+
+def _scan_markdown_blocks(
+    text: str,
+) -> list[_MarkdownBlock]:
+    """Scan Markdown into exact source spans whose concatenation is unchanged."""
+    lines = text.splitlines(keepends=True)
+    blocks: list[_MarkdownBlock] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+
+        if _is_blank_line(line):
+            start = index
+
+            while (
+                index < len(lines)
+                and _is_blank_line(lines[index])
+            ):
+                index += 1
+
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(lines[start:index]),
+                    kind="blank",
+                )
+            )
+            continue
+
+        if (
+            index == 0
+            and FRONT_MATTER_OPEN_PATTERN.fullmatch(
+                _line_content(line)
+            )
+            is not None
+        ):
+            start = index
+            index += 1
+
+            while index < len(lines):
+                current = lines[index]
+                index += 1
+
+                if FRONT_MATTER_CLOSE_PATTERN.fullmatch(
+                    _line_content(current)
+                ) is not None:
+                    break
+
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(lines[start:index]),
+                    kind="front_matter",
+                )
+            )
+            continue
+
+        if _fence_marker(line) is not None:
+            start = index
+            index = _consume_fenced_block(
+                lines,
+                index,
+            )
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(lines[start:index]),
+                    kind="fenced_code",
+                )
+            )
+            continue
+
+        if _is_indented_code_line(line):
+            start = index
+            index = _consume_indented_code(
+                lines,
+                index,
+            )
+            blocks.append(
+                _MarkdownBlock(
+                    text="".join(lines[start:index]),
+                    kind="indented_code",
+                )
+            )
+            continue
+
+        list_indent = _list_item_indent(line)
+
+        if (
+            list_indent is not None
+            and list_indent <= 3
+        ):
+            list_blocks, index = (
+                _consume_list_items(
+                    lines,
+                    index,
+                )
+            )
+            blocks.extend(list_blocks)
+            continue
+
+        if _is_blockquote_line(line):
+            quote_blocks, index = (
+                _consume_blockquote_paragraphs(
+                    lines,
+                    index,
+                )
+            )
+            blocks.extend(quote_blocks)
+            continue
+
+        start = index
+        index += 1
+
+        while index < len(lines):
+            current = lines[index]
+
+            if (
+                _is_blank_line(current)
+                or _is_structural_start(current)
+            ):
+                break
+
+            index += 1
+
+        block_text = "".join(lines[start:index])
+        block_kind = (
+            "table"
+            if is_markdown_table_block(block_text)
+            else "normal"
+        )
+        blocks.append(
+            _MarkdownBlock(
+                text=block_text,
+                kind=block_kind,
+            )
+        )
+
+    return blocks
 
 
 def split_by_paragraphs(
     text: str,
 ) -> list[str]:
-    """
-    将 Markdown 拆成结构块。
-
-    与普通的空行正则切分相比，这个函数会：
-
-    - 保留围栏代码块内部的空行；
-    - 尽量将连续表格行保留在同一块；
-    - 保留 YAML Front Matter；
-    - 将普通连续文本作为一个结构块；
-    - 不把代码块内部内容误认为普通段落。
-    """
-    lines = text.splitlines()
-    blocks: list[str] = []
-    index = 0
-    total_lines = len(lines)
-
-    while index < total_lines:
-        line = lines[index]
-
-        if not line.strip():
-            index += 1
-            continue
-
-        # 只在文档开头识别 YAML Front Matter。
-        if (
-            not blocks
-            and index == 0
-            and line.lstrip("\ufeff").strip()
-            == "---"
-        ):
-            front_matter_lines = [line]
-            index += 1
-
-            while index < total_lines:
-                current = lines[index]
-                front_matter_lines.append(current)
-                index += 1
-
-                if current.strip() == "---":
-                    break
-
-            blocks.append(
-                "\n".join(front_matter_lines)
-            )
-            continue
-
-        fence_info = _fence_marker(line)
-
-        if fence_info is not None:
-            marker_char, marker_length = (
-                fence_info
-            )
-            fenced_lines = [line]
-            index += 1
-
-            while index < total_lines:
-                current = lines[index]
-                fenced_lines.append(current)
-                index += 1
-
-                if _is_fence_close(
-                    current,
-                    marker_char,
-                    marker_length,
-                ):
-                    break
-
-            blocks.append(
-                "\n".join(fenced_lines)
-            )
-            continue
-
-        normal_lines = [line]
-        index += 1
-
-        while index < total_lines:
-            current = lines[index]
-
-            if not current.strip():
-                break
-
-            # 新代码围栏作为独立结构块处理。
-            if _fence_marker(current) is not None:
-                break
-
-            normal_lines.append(current)
-            index += 1
-
-        blocks.append(
-            "\n".join(normal_lines)
-        )
-
+    """Return exact Markdown structure spans without normalizing source text."""
     return [
-        block.strip()
-        for block in blocks
-        if block.strip()
+        block.text
+        for block in _scan_markdown_blocks(text)
     ]
 
 
@@ -262,12 +608,12 @@ def _find_preferred_split(
 
     优先顺序：
 
-    1. 中文或英文句末标点；
-    2. 空格或制表符；
-    3. 最大字符位置。
+    1. 完整换行边界；
+    2. 中文或英文句末标点；
+    3. 不属于硬换行的空格或制表符。
 
     为避免产生特别短的分片，只接受位于窗口后半段的
-    自然边界。
+    自然边界。没有安全边界时返回 0，由调用方明确拒绝切分。
     """
     if len(text) <= max_chars:
         return len(text)
@@ -278,12 +624,37 @@ def _find_preferred_split(
         int(max_chars * 0.5),
     )
 
+    line_positions = [
+        match.end()
+        for match in re.finditer(
+            r"\r\n|\n|\r",
+            window,
+        )
+        if match.end() >= minimum_position
+    ]
+
+    if line_positions:
+        return line_positions[-1]
+
+    def separates_line_ending(
+        position: int,
+    ) -> bool:
+        return re.match(
+            r"[ \t]*(?:\r\n|\n|\r)",
+            text[position:],
+        ) is not None
+
     sentence_positions = [
         match.end()
         for match in SENTENCE_END_PATTERN.finditer(
             window
         )
-        if match.end() >= minimum_position
+        if (
+            match.end() >= minimum_position
+            and not separates_line_ending(
+                match.end()
+            )
+        )
     ]
 
     if sentence_positions:
@@ -295,13 +666,16 @@ def _find_preferred_split(
         if (
             character in {" ", "\t"}
             and index + 1 >= minimum_position
+            and not separates_line_ending(
+                index + 1
+            )
         )
     ]
 
     if whitespace_positions:
         return whitespace_positions[-1]
 
-    return max_chars
+    return 0
 
 
 def split_line_by_chars(
@@ -311,7 +685,8 @@ def split_line_by_chars(
     """
     拆分超过限制的单行文本。
 
-    优先在句末或空白边界切分，最后才按字符硬切。
+    只在完整换行、句末或安全空白边界切分；
+    没有安全边界时拒绝按字符破坏 Markdown。
     """
     if max_chars <= 0:
         raise ValueError(
@@ -331,7 +706,10 @@ def split_line_by_chars(
         )
 
         if split_position <= 0:
-            split_position = max_chars
+            raise RuntimeError(
+                "无法在不破坏 Markdown 结构的情况下拆分超长普通文本："
+                f"{len(remaining):,} > {max_chars:,} 字符"
+            )
 
         part = remaining[:split_position]
         remaining = remaining[split_position:]
@@ -383,104 +761,151 @@ def is_markdown_table_block(
     )
 
 
-def split_long_block(
-    block: str,
+def _raise_unsafe_block_error(
+    block: _MarkdownBlock,
     max_chars: int,
-) -> list[str]:
-    """
-    拆分超过限制的 Markdown 结构块。
-
-    安全策略：
-
-    - 普通文本优先按完整行切分；
-    - 超长单行优先按句末或空白切分；
-    - 围栏代码块不允许从中间静默切断；
-    - Markdown 表格不允许拆成缺失表头的碎片。
-
-    超长代码块或表格应通过提高 --max-chars，
-    或人工拆分源文件解决。
-    """
-    if len(block) <= max_chars:
-        return [block]
-
-    if is_fenced_code_block(block):
+) -> None:
+    if block.kind == "fenced_code":
         raise RuntimeError(
             "检测到超过单片限制的围栏代码块："
-            f"{len(block):,} > {max_chars:,} 字符。"
+            f"{len(block.text):,} > {max_chars:,} 字符。"
             "为避免破坏代码围栏，程序已停止切分。"
             "请增大 --max-chars，或人工拆分该代码块。"
         )
 
-    if is_markdown_table_block(block):
+    if block.kind == "indented_code":
+        raise RuntimeError(
+            "检测到超过单片限制的缩进代码块："
+            f"{len(block.text):,} > {max_chars:,} 字符。"
+            "为避免破坏代码缩进，程序已停止切分。"
+            "请增大 --max-chars，或人工拆分该代码块。"
+        )
+
+    if block.kind == "table":
         raise RuntimeError(
             "检测到超过单片限制的 Markdown 表格："
-            f"{len(block):,} > {max_chars:,} 字符。"
+            f"{len(block.text):,} > {max_chars:,} 字符。"
             "为避免丢失表头或破坏表格结构，"
             "程序已停止切分。"
             "请增大 --max-chars，或人工拆分该表格。"
         )
 
-    parts: list[str] = []
-    current_lines: list[str] = []
-    current_length = 0
+    if block.kind == "list_item":
+        raise RuntimeError(
+            "检测到超过单片限制的 Markdown 列表项："
+            f"{len(block.text):,} > {max_chars:,} 字符。"
+            "列表只能在完整列表项之间切分。"
+            "请增大 --max-chars，或人工拆分该列表项。"
+        )
 
-    for line in block.splitlines():
-        line_parts = split_line_by_chars(
-            line,
+    if block.kind == "blockquote":
+        raise RuntimeError(
+            "检测到超过单片限制的 Markdown 引用段落："
+            f"{len(block.text):,} > {max_chars:,} 字符。"
+            "引用只能在完整引用段落之间切分。"
+            "请增大 --max-chars，或人工拆分该引用段落。"
+        )
+
+    if block.kind == "front_matter":
+        raise RuntimeError(
+            "检测到超过单片限制的 YAML Front Matter："
+            f"{len(block.text):,} > {max_chars:,} 字符。"
+            "为避免破坏元数据，程序已停止切分。"
+        )
+
+    raise RuntimeError(
+        "无法安全拆分 Markdown 结构块："
+        f"{len(block.text):,} > {max_chars:,} 字符"
+    )
+
+
+def _split_markdown_block(
+    block: _MarkdownBlock,
+    max_chars: int,
+) -> list[str]:
+    if len(block.text) <= max_chars:
+        return [block.text]
+
+    if block.kind in {
+        "fenced_code",
+        "indented_code",
+        "table",
+        "list_item",
+        "blockquote",
+        "front_matter",
+    }:
+        _raise_unsafe_block_error(
+            block,
             max_chars,
         )
 
-        for line_part in line_parts:
-            line_length = len(line_part)
-            separator_length = (
-                1 if current_lines else 0
+    return split_line_by_chars(
+        block.text,
+        max_chars,
+    )
+
+
+def _pack_markdown_blocks(
+    blocks: list[_MarkdownBlock],
+    max_chars: int,
+) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+
+    for block in blocks:
+        block_parts = _split_markdown_block(
+            block,
+            max_chars,
+        )
+
+        if len(block_parts) > 1:
+            if current:
+                chunks.append(current)
+                current = ""
+
+            chunks.extend(block_parts)
+            continue
+
+        block_part = block_parts[0]
+
+        if (
+            current
+            and len(current) + len(block_part)
+            > max_chars
+        ):
+            chunks.append(current)
+            current = ""
+
+        if len(block_part) > max_chars:
+            raise RuntimeError(
+                "切片失败，结构块仍然超长："
+                f"{len(block_part):,} 字符"
             )
 
-            if (
-                current_lines
-                and (
-                    current_length
-                    + separator_length
-                    + line_length
-                    > max_chars
-                )
-            ):
-                parts.append(
-                    "\n".join(current_lines)
-                )
-                current_lines = []
-                current_length = 0
+        current += block_part
 
-            if current_lines:
-                current_length += 1
+    if current:
+        chunks.append(current)
 
-            current_lines.append(line_part)
-            current_length += line_length
+    return chunks
 
-    if current_lines:
-        parts.append(
-            "\n".join(current_lines)
+
+def split_long_block(
+    block: str,
+    max_chars: int,
+) -> list[str]:
+    """Split an exact Markdown source span only at safe structure boundaries."""
+    if max_chars <= 0:
+        raise ValueError(
+            "max_chars 必须大于 0"
         )
 
-    result = [
-        part.strip()
-        for part in parts
-        if part.strip()
-    ]
+    return _pack_markdown_blocks(
+        _scan_markdown_blocks(block),
+        max_chars,
+    )
 
-    oversized = [
-        len(part)
-        for part in result
-        if len(part) > max_chars
-    ]
 
-    if oversized:
-        raise RuntimeError(
-            "长结构块切分失败，仍存在超长内容："
-            f"{max(oversized):,} 字符"
-        )
-
-    return result
 def create_chunks(
     text: str,
     max_chars: int,
@@ -488,87 +913,26 @@ def create_chunks(
     """
     创建发送给模型的 Markdown 分片。
 
-    处理原则：
-
-    - 优先保持 Markdown 结构块；
-    - 标题和后续正文在容量允许时放在同一分片；
-    - 表格、列表和连续段落尽量保持完整；
-    - 代码围栏中的空行不会造成错误拆分；
-    - 任何最终分片都不能超过 max_chars。
+    每个分片都是源文本的连续区间；所有分片连接后必须与源文本完全一致。
+    代码块、表格、列表项和引用段落只在安全结构边界切分。
     """
     if max_chars <= 0:
         raise ValueError(
             "max_chars 必须大于 0"
         )
 
-    chunks: list[str] = []
-    current_blocks: list[str] = []
-    current_length = 0
+    if not text:
+        return []
 
-    def flush_current() -> None:
-        nonlocal current_blocks
-        nonlocal current_length
+    result = _pack_markdown_blocks(
+        _scan_markdown_blocks(text),
+        max_chars,
+    )
 
-        if current_blocks:
-            chunks.append(
-                "\n\n".join(current_blocks)
-            )
-            current_blocks = []
-            current_length = 0
-
-    for block in split_by_paragraphs(text):
-        block_parts = (
-            [block]
-            if len(block) <= max_chars
-            else split_long_block(
-                block,
-                max_chars,
-            )
+    if "".join(result) != text:
+        raise RuntimeError(
+            "切片失败：分片无法无损还原源 Markdown"
         )
-
-        # 超长结构块已经拆成多个部分。
-        # 先提交之前积累的普通结构块。
-        if len(block_parts) > 1:
-            flush_current()
-
-            for block_part in block_parts:
-                if len(block_part) > max_chars:
-                    raise RuntimeError(
-                        "切片失败，结构块仍然超长："
-                        f"{len(block_part):,} 字符"
-                    )
-
-                chunks.append(block_part)
-
-            continue
-
-        block_part = block_parts[0]
-        added_length = len(block_part)
-
-        if current_blocks:
-            added_length += 2
-
-        if (
-            current_blocks
-            and current_length + added_length
-            > max_chars
-        ):
-            flush_current()
-
-        current_blocks.append(block_part)
-
-        if current_length:
-            current_length += 2
-
-        current_length += len(block_part)
-
-    flush_current()
-
-    result = [
-        chunk.strip()
-        for chunk in chunks
-        if chunk.strip()
-    ]
 
     oversized = [
         len(chunk)
