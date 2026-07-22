@@ -24,6 +24,7 @@ from clean_auto.config import (
 
 FIXED_TIME = "2026-07-22T12:00:00"
 BATCH_ID = "20260722T120000000000Z-0123456789ab"
+CHILD_BATCH_ID = "20260722T130000000000Z-fedcba987654"
 REAL_BUILD_PLANS_SAFELY = pipeline.build_plans_safely
 
 
@@ -93,6 +94,7 @@ def _args(
     *,
     resume_batch: str = "",
     selection_file: str = "",
+    retry_failed: str = "",
     base_dir: str = "",
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -101,6 +103,7 @@ def _args(
         force_unlock=False,
         resume_batch=resume_batch,
         selection_file=selection_file,
+        retry_failed=retry_failed,
         base_dir=base_dir,
     )
 
@@ -178,6 +181,41 @@ def test_parse_resume_batch_supports_latest_and_explicit_id() -> None:
 def test_resume_batch_rejects_incompatible_options(argv: list[str]) -> None:
     with pytest.raises(RuntimeError):
         validate_args(parse_args(argv))
+
+
+def test_parse_retry_failed_supports_latest_and_explicit_id() -> None:
+    latest = parse_args(["--retry-failed"])
+    explicit = parse_args(["--retry-failed", BATCH_ID])
+
+    assert latest.retry_failed == "latest"
+    assert explicit.retry_failed == BATCH_ID
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--retry-failed", "not-a-batch-id"],
+        ["--retry-failed", "--resume-batch"],
+        ["--retry-failed", "--selection-file", "selected.json"],
+        ["--retry-failed", "--dry-run"],
+    ],
+)
+def test_retry_failed_rejects_invalid_or_incompatible_options(
+    argv: list[str],
+) -> None:
+    with pytest.raises(RuntimeError):
+        validate_args(parse_args(argv))
+
+
+def test_retry_failed_accepts_workers_and_max_files() -> None:
+    args = parse_args(
+        ["--retry-failed", BATCH_ID, "--workers", "5", "--max-files", "10"]
+    )
+    validate_args(args)
+
+    assert args.retry_failed == BATCH_ID
+    assert args.workers == 5
+    assert args.max_files == 10
 
 
 def test_generate_batch_id_is_valid_and_unique() -> None:
@@ -1218,3 +1256,448 @@ def test_dry_run_does_not_update_existing_latest(
 
     assert _exit_code(lambda: pipeline.main([])) == 0
     assert latest.read_bytes() == original_latest
+
+
+def _make_retry_parent(
+    log_dir: Path,
+    entries: list[tuple[str, str]],
+) -> dict[str, object]:
+    parent = batch_manifest.create_manifest(
+        log_dir=log_dir,
+        relative_paths=[path for path, _status in entries],
+        selection_source="scan",
+        batch_id=BATCH_ID,
+        timestamp=FIXED_TIME,
+    )
+    for path, status in entries:
+        batch_manifest.update_file(
+            log_dir,
+            parent,
+            path,
+            status=status,
+            source_sha256="0" * 64,
+            error="old error with sk-parent-secret" if status == "failed" else None,
+            increment_attempts=status not in {"pending", "skipped"},
+            timestamp=FIXED_TIME,
+        )
+    return parent
+
+
+def test_retry_failed_paths_only_selects_failed_in_parent_order() -> None:
+    parent = {
+        "files": [
+            {"path": "succeeded.md", "status": "succeeded"},
+            {"path": "nested/first.md", "status": "failed"},
+            {"path": "skipped.md", "status": "skipped"},
+            {"path": "second.md", "status": "failed"},
+            {"path": "pending.md", "status": "pending"},
+            {"path": "nested/first.md", "status": "failed"},
+            {"path": "interrupted.md", "status": "interrupted"},
+            {"path": "running.md", "status": "running"},
+        ]
+    }
+
+    assert batch_manifest.retry_failed_paths(parent) == [
+        "nested/first.md",
+        "second.md",
+    ]
+
+
+def test_create_retry_child_resets_file_state_and_preserves_parent(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    parent = _make_retry_parent(
+        log_dir,
+        [
+            ("ok.md", "succeeded"),
+            ("nested/first.md", "failed"),
+            ("second.md", "failed"),
+        ],
+    )
+    parent_path = batch_manifest.manifest_path(log_dir, BATCH_ID)
+    parent_bytes = parent_path.read_bytes()
+
+    child = batch_manifest.create_retry_manifest(
+        log_dir=log_dir,
+        parent_manifest=parent,
+        relative_paths=["nested/first.md", "second.md"],
+        workers=3,
+        batch_id=CHILD_BATCH_ID,
+        timestamp="2026-07-22T13:00:00",
+    )
+
+    assert child["batch_id"] == CHILD_BATCH_ID
+    assert child["batch_id"] != parent["batch_id"]
+    assert child["workers"] == 3
+    assert child["selection"] == {
+        "source": "retry_failed",
+        "selection_file": None,
+        "parent_batch_id": BATCH_ID,
+    }
+    assert [item["path"] for item in child["files"]] == [
+        "nested/first.md",
+        "second.md",
+    ]
+    assert all(
+        item == {
+            "path": item["path"],
+            "status": "pending",
+            "source_sha256": None,
+            "error": None,
+            "attempts": 0,
+            "started_at": None,
+            "finished_at": None,
+        }
+        for item in child["files"]
+    )
+    assert parent_path.read_bytes() == parent_bytes
+    latest = json.loads(batch_manifest.latest_path(log_dir).read_bytes())
+    assert latest["batch_id"] == CHILD_BATCH_ID
+    serialized = json.dumps(child, ensure_ascii=False)
+    assert "sk-parent-secret" not in serialized
+    assert "prompt" not in serialized.lower()
+    assert "api_key" not in serialized.lower()
+
+
+def test_retry_loader_tolerates_duplicate_parent_paths_and_deduplicates(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "logs"
+    parent = _make_retry_parent(log_dir, [("duplicate.md", "failed")])
+    parent["files"].append(dict(parent["files"][0]))
+    batch_manifest.recount(parent)
+    path = batch_manifest.manifest_path(log_dir, BATCH_ID)
+    path.write_bytes(json.dumps(parent).encode("utf-8"))
+    original = path.read_bytes()
+
+    loaded = batch_manifest.load_retry_parent(log_dir, BATCH_ID)
+
+    assert batch_manifest.retry_failed_paths(loaded) == ["duplicate.md"]
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "malicious_path",
+    [
+        "../outside.md",
+        "/absolute.md",
+        "//server/share.md",
+        "C:/outside.md",
+        "nested\\outside.md",
+        "notes.txt",
+        "old_cleaned.md",
+    ],
+)
+def test_retry_parent_rejects_unsafe_or_non_markdown_paths(
+    tmp_path: Path,
+    malicious_path: str,
+) -> None:
+    log_dir = tmp_path / "logs"
+    parent = _make_retry_parent(log_dir, [("safe.md", "failed")])
+    parent["files"][0]["path"] = malicious_path
+    path = batch_manifest.manifest_path(log_dir, BATCH_ID)
+    path.write_bytes(json.dumps(parent).encode("utf-8"))
+
+    with pytest.raises(RuntimeError):
+        batch_manifest.load_retry_parent(log_dir, BATCH_ID)
+
+
+def test_retry_without_failed_files_is_no_op_before_lock_or_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _make_config(tmp_path)
+    _make_retry_parent(
+        config.log_dir,
+        [("ok.md", "succeeded"), ("pending.md", "pending")],
+    )
+    latest_path = batch_manifest.latest_path(config.log_dir)
+    latest_bytes = latest_path.read_bytes()
+    _install_pipeline(
+        monkeypatch,
+        config,
+        [],
+        args=_args(retry_failed="latest"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "acquire_lock",
+        lambda *_args, **_kwargs: pytest.fail("empty retry must not lock"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "ApiClient",
+        lambda *_args, **_kwargs: pytest.fail("empty retry must not create API client"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "process_file",
+        lambda **_kwargs: pytest.fail("empty retry must not process"),
+    )
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    assert "所选批次没有失败文件" in capsys.readouterr().out
+    assert latest_path.read_bytes() == latest_bytes
+    assert list((config.log_dir / "batches").glob("[0-9]*.json")) == [
+        batch_manifest.manifest_path(config.log_dir, BATCH_ID)
+    ]
+
+
+def test_retry_latest_creates_child_replans_hash_and_keeps_parent_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, "changed.md")
+    config = _make_config(tmp_path)
+    parent = _make_retry_parent(config.log_dir, [("changed.md", "failed")])
+    parent_path = batch_manifest.manifest_path(config.log_dir, BATCH_ID)
+    parent_bytes = parent_path.read_bytes()
+    _install_pipeline(
+        monkeypatch,
+        config,
+        [plan],
+        args=_args(retry_failed="latest"),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+    monkeypatch.setattr(pipeline, "process_file", _success)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert child["selection"]["parent_batch_id"] == parent["batch_id"]
+    assert child["selection"]["source"] == "retry_failed"
+    assert child["files"][0]["status"] == "succeeded"
+    assert child["files"][0]["source_sha256"] == plan.source_sha256
+    assert child["files"][0]["source_sha256"] != "0" * 64
+    assert parent_path.read_bytes() == parent_bytes
+
+
+def test_retry_max_files_leaves_pending_and_child_can_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, f"{index}.md") for index in range(3)]
+    config = _make_config(tmp_path, max_files=2)
+    _make_retry_parent(
+        config.log_dir,
+        [(plan.relative_path.as_posix(), "failed") for plan in plans],
+    )
+    _install_pipeline(
+        monkeypatch,
+        config,
+        plans,
+        args=_args(retry_failed=BATCH_ID),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+    calls: list[str] = []
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        calls.append(plan.relative_path.as_posix())
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert calls == ["0.md", "1.md"]
+    assert [item["status"] for item in child["files"]] == [
+        "succeeded",
+        "succeeded",
+        "pending",
+    ]
+    assert child["status"] == "incomplete"
+
+    resume_config = _make_config(tmp_path)
+    _install_pipeline(
+        monkeypatch,
+        resume_config,
+        [plans[2]],
+        args=_args(resume_batch=CHILD_BATCH_ID),
+    )
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    resumed = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert calls == ["0.md", "1.md", "2.md"]
+    assert all(item["status"] == "succeeded" for item in resumed["files"])
+
+
+def test_retry_missing_source_fails_only_that_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    valid = _make_plan(tmp_path, "valid.md")
+    config = _make_config(tmp_path)
+    _make_retry_parent(
+        config.log_dir,
+        [("missing.md", "failed"), ("valid.md", "failed")],
+    )
+    _install_pipeline(
+        monkeypatch,
+        config,
+        [valid],
+        args=_args(retry_failed=BATCH_ID),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+    monkeypatch.setattr(pipeline, "build_plans_safely", REAL_BUILD_PLANS_SAFELY)
+    monkeypatch.setattr(pipeline, "process_file", _success)
+
+    assert _exit_code(lambda: pipeline.main([])) == 2
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert [item["status"] for item in child["files"]] == [
+        "failed",
+        "succeeded",
+    ]
+
+
+def test_retry_final_cache_hit_is_skipped_without_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, "cached.md")
+    config = _make_config(tmp_path)
+    _make_retry_parent(config.log_dir, [("cached.md", "failed")])
+    _install_pipeline(
+        monkeypatch,
+        config,
+        [plan],
+        args=_args(retry_failed=BATCH_ID),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+    monkeypatch.setattr(pipeline, "plan_has_pending_chunks", lambda **_kwargs: False)
+    monkeypatch.setattr(pipeline, "final_output_is_current", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        pipeline,
+        "process_file",
+        lambda **_kwargs: pytest.fail("valid final cache must skip API"),
+    )
+
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert child["files"][0]["status"] == "skipped"
+
+
+def test_retry_concurrent_failure_isolated_and_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, f"{index}.md") for index in range(3)]
+    config = _make_config(tmp_path, workers=2)
+    _make_retry_parent(
+        config.log_dir,
+        [(plan.relative_path.as_posix(), "failed") for plan in plans],
+    )
+    _install_pipeline(
+        monkeypatch,
+        config,
+        plans,
+        args=_args(retry_failed=BATCH_ID),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+    barrier = threading.Barrier(2)
+    guard = threading.Lock()
+    active = 0
+    maximum = 0
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        nonlocal active, maximum
+        with guard:
+            active += 1
+            maximum = max(maximum, active)
+        if plan is not plans[2]:
+            barrier.wait(timeout=2)
+        with guard:
+            active -= 1
+        if plan is plans[1]:
+            raise RuntimeError("failed again")
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 2
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    assert maximum == 2
+    assert [item["status"] for item in child["files"]] == [
+        "succeeded",
+        "failed",
+        "succeeded",
+    ]
+
+
+def test_retry_stop_keeps_unstarted_child_files_pending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [_make_plan(tmp_path, f"{index}.md") for index in range(4)]
+    config = _make_config(tmp_path, workers=2)
+    _make_retry_parent(
+        config.log_dir,
+        [(plan.relative_path.as_posix(), "failed") for plan in plans],
+    )
+    _install_pipeline(
+        monkeypatch,
+        config,
+        plans,
+        args=_args(retry_failed=BATCH_ID),
+    )
+    monkeypatch.setattr(batch_manifest, "generate_batch_id", lambda: CHILD_BATCH_ID)
+
+    def process(plan: FilePlan, **_kwargs: object) -> ProcessOutcome:
+        if plan is plans[0]:
+            config.stop_file.write_bytes(b"")
+            raise GracefulStop("stop retry")
+        return _success()
+
+    monkeypatch.setattr(pipeline, "process_file", process)
+
+    assert _exit_code(lambda: pipeline.main([])) == 1
+    child = batch_manifest.load_manifest(config.log_dir, CHILD_BATCH_ID)
+    statuses = [item["status"] for item in child["files"]]
+    assert "running" not in statuses
+    assert statuses.count("interrupted") >= 1
+    assert statuses.count("pending") >= 2
+    assert child["status"] == "stopped"
+
+
+@pytest.mark.parametrize("raw", [None, b"not-json"])
+def test_retry_latest_reports_missing_or_corrupt_pointer(
+    tmp_path: Path,
+    raw: bytes | None,
+) -> None:
+    latest = batch_manifest.latest_path(tmp_path / "logs")
+    if raw is not None:
+        latest.parent.mkdir(parents=True)
+        latest.write_bytes(raw)
+
+    with pytest.raises(RuntimeError):
+        batch_manifest.load_retry_parent(tmp_path / "logs", "latest")
+
+
+def test_retry_rejects_symlink_before_creating_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, "linked.md")
+    config = _make_config(tmp_path)
+    _make_retry_parent(config.log_dir, [("linked.md", "failed")])
+    latest = batch_manifest.latest_path(config.log_dir)
+    latest_bytes = latest.read_bytes()
+    _install_pipeline(
+        monkeypatch,
+        config,
+        [plan],
+        args=_args(retry_failed=BATCH_ID),
+    )
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path.name == "linked.md" or original_is_symlink(path),
+    )
+
+    with pytest.raises(RuntimeError, match="符号链接"):
+        pipeline.main([])
+
+    assert latest.read_bytes() == latest_bytes
+    assert not batch_manifest.manifest_path(config.log_dir, CHILD_BATCH_ID).exists()

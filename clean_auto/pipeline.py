@@ -8,11 +8,14 @@ from typing import Any
 from .api_client import ApiClient
 from .batch_manifest import (
     create_manifest,
+    create_retry_manifest,
     file_status,
     finalize_manifest,
+    load_retry_parent,
     load_resume_manifest,
     prepare_resume,
     reset_cancelled_file,
+    retry_failed_paths,
     resumable_paths,
     update_file,
 )
@@ -48,6 +51,7 @@ from .locking import acquire_lock, release_lock
 from .processor import process_file
 from .selection import (
     load_selection_paths,
+    resolve_input_paths,
     resolve_selection_file,
 )
 from .scheduler import (
@@ -292,6 +296,11 @@ def main(
         "resume_batch",
         "",
     )
+    retry_value = getattr(
+        args,
+        "retry_failed",
+        "",
+    )
     selected_source_paths: list[Path] | None = None
     resolved_selection_file: Path | None = None
     selection_value = getattr(
@@ -337,8 +346,28 @@ def main(
         )
 
     source_paths: list[Path] = []
+    retry_parent_id: str | None = None
 
-    if not resume_value:
+    if retry_value:
+        retry_parent = load_retry_parent(
+            config.log_dir,
+            retry_value,
+        )
+        retry_paths = retry_failed_paths(
+            retry_parent
+        )
+
+        if not retry_paths:
+            print("所选批次没有失败文件")
+            return
+
+        retry_parent_id = retry_parent["batch_id"]
+        source_paths = resolve_input_paths(
+            retry_paths,
+            config.input_dir,
+        )
+
+    if not resume_value and not retry_value:
         source_paths = (
             selected_source_paths
             if selected_source_paths is not None
@@ -399,6 +428,40 @@ def main(
             source_paths = _resume_source_paths(
                 manifest,
                 config.input_dir,
+            )
+        elif retry_value:
+            if retry_parent_id is None:
+                raise RuntimeError(
+                    "无法确定失败重试的父批次"
+                )
+
+            retry_parent = load_retry_parent(
+                config.log_dir,
+                retry_parent_id,
+            )
+            retry_paths = retry_failed_paths(
+                retry_parent
+            )
+
+            if not retry_paths:
+                print("所选批次没有失败文件")
+                return
+
+            source_paths = resolve_input_paths(
+                retry_paths,
+                config.input_dir,
+            )
+            manifest = create_retry_manifest(
+                log_dir=config.log_dir,
+                parent_manifest=retry_parent,
+                relative_paths=[
+                    relative_name(
+                        path,
+                        config.input_dir,
+                    )
+                    for path in source_paths
+                ],
+                workers=config.workers,
             )
         elif not config.dry_run:
             selection_source = (

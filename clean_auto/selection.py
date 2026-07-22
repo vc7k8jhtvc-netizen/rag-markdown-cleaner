@@ -163,6 +163,14 @@ def load_selection_paths(
 ) -> list[Path]:
     data = _load_selection_data(selection_file)
     raw_paths = _validate_selection_schema(data)
+    return resolve_input_paths(raw_paths, input_dir)
+
+
+def resolve_input_paths(
+    raw_paths: list[object],
+    input_dir: Path,
+) -> list[Path]:
+    """Validate input-relative paths without relying on a selection file."""
     selected_paths: list[Path] = []
     seen: set[str] = set()
 

@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .config import atomic_write_json, compact_error, now_iso
+from .config import (
+    BATCH_ID_PATTERN,
+    atomic_write_json,
+    compact_error,
+    now_iso,
+)
 
 
 BATCH_MANIFEST_SCHEMA = "rag-cleaner/batch-manifest"
@@ -37,9 +42,6 @@ SELECTION_SOURCES = (
     "retry_failed",
 )
 
-BATCH_ID_PATTERN = re.compile(
-    r"^[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$"
-)
 WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
 _UNSET = object()
 
@@ -228,6 +230,8 @@ def _validate_file_item(item: object) -> str:
 def validate_manifest(
     manifest: object,
     expected_batch_id: str | None = None,
+    *,
+    allow_duplicate_paths: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise RuntimeError(
@@ -353,7 +357,7 @@ def validate_manifest(
     for item in files:
         path = _validate_file_item(item)
 
-        if path in seen:
+        if path in seen and not allow_duplicate_paths:
             raise RuntimeError(
                 f"批次 manifest 包含重复文件：{path}"
             )
@@ -530,13 +534,19 @@ def create_manifest(
 def load_manifest(
     log_dir: Path,
     batch_id: str,
+    *,
+    allow_duplicate_paths: bool = False,
 ) -> dict[str, Any]:
     selected_id = validate_batch_id(batch_id)
     data = _read_json(
         manifest_path(log_dir, selected_id),
         "批次 manifest",
     )
-    return validate_manifest(data, selected_id)
+    return validate_manifest(
+        data,
+        selected_id,
+        allow_duplicate_paths=allow_duplicate_paths,
+    )
 
 
 def _load_latest_id(log_dir: Path) -> str:
@@ -591,6 +601,91 @@ def load_resume_manifest(
         else validate_batch_id(requested)
     )
     return load_manifest(log_dir, batch_id)
+
+
+def load_retry_parent(
+    log_dir: Path,
+    requested: str,
+) -> dict[str, Any]:
+    batch_id = (
+        _load_latest_id(log_dir)
+        if requested == "latest"
+        else validate_batch_id(requested)
+    )
+    return load_manifest(
+        log_dir,
+        batch_id,
+        allow_duplicate_paths=True,
+    )
+
+
+def retry_failed_paths(
+    parent_manifest: dict[str, Any],
+) -> list[str]:
+    files = parent_manifest.get("files")
+    if not isinstance(files, list):
+        raise RuntimeError(
+            "父批次 manifest files 必须是数组"
+        )
+
+    failed: list[str] = []
+    seen: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict):
+            raise RuntimeError(
+                "父批次 manifest 文件项必须是对象"
+            )
+        if item.get("status") != "failed":
+            continue
+        path = _validate_relative_path(item.get("path"))
+        if path in seen:
+            continue
+        seen.add(path)
+        failed.append(path)
+    return failed
+
+
+def create_retry_manifest(
+    log_dir: Path,
+    parent_manifest: dict[str, Any],
+    relative_paths: list[str],
+    workers: int,
+    *,
+    batch_id: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    parent = validate_manifest(
+        parent_manifest,
+        allow_duplicate_paths=True,
+    )
+    eligible = set(retry_failed_paths(parent))
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    for relative_path in relative_paths:
+        normalized = _validate_relative_path(relative_path)
+        if normalized not in eligible:
+            raise RuntimeError(
+                f"重试文件不属于父批次 failed 项：{normalized}"
+            )
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        selected.append(normalized)
+
+    selected_batch_id = batch_id or generate_batch_id()
+    if selected_batch_id == parent["batch_id"]:
+        raise RuntimeError("重试子批次必须使用新的 batch ID")
+
+    return create_manifest(
+        log_dir=log_dir,
+        relative_paths=selected,
+        selection_source="retry_failed",
+        parent_batch_id=parent["batch_id"],
+        workers=workers,
+        batch_id=selected_batch_id,
+        timestamp=timestamp,
+    )
 
 
 def _find_file(

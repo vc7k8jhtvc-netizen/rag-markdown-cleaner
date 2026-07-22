@@ -36,7 +36,10 @@ Next stage:
 - 并发处理由主线程维护 manifest 状态和进度；stop 后不再提交新文件，并尝试取消尚未
   运行的 future。共享 `ApiClient` 限制活跃请求数，协调 429 冷却；JSONL 追加受进程内锁
   保护，并在 worker 开始和 assembly 正式发布前检查源文件 SHA-256。
-- `--retry-failed` 和一键菜单尚未实现。
+- v1.6.0 第四阶段已完成：新增 `--retry-failed [BATCH_ID]`，可重试 latest 或指定父批次
+  中的 `failed` 文件，并创建独立子批次保留父批次历史；支持当前 `workers` 和
+  `--max-files`，未调度项可继续通过 `--resume-batch` 处理。
+- 一键菜单、多文件选择器和目录选择器尚未接入。
 
 ## Git History
 
@@ -65,6 +68,9 @@ Next stage:
 - 2026-07-22: v1.6.0 第三阶段完成 `--workers 1-5` 和有界文件级线程池调度；保留
   `workers=1` 串行兼容行为和单文件 chunk 顺序，新增 stop/cancel 状态协调、共享 API
   请求上限与 429 冷却、并发 JSONL 写入保护和源文件双重 hash 发布保护。
+- 2026-07-22: v1.6.0 第四阶段完成 `--retry-failed [BATCH_ID]`；仅按父批次原始顺序
+  选择 `failed` 文件，创建带 `parent_batch_id` 的独立子批次，支持 latest、显式 batch
+  ID、`workers`、`--max-files`、stop 和后续 resume，且不修改父批次历史。
 
 ## Known Issues
 
@@ -73,7 +79,7 @@ Next stage:
 
 ## Test Result
 
-- `pytest -q`: 233 passed
+- `pytest -q`: 259 passed
 - `ruff check clean_auto tests`: All checks passed
 - `python -m build`: wheel 和 sdist 构建成功
 - `python -m twine check dist/*`: wheel 和 sdist 均通过
@@ -122,6 +128,14 @@ v1.6.0 第三阶段新增覆盖：
 - final 缓存跳过、stop 后停止提交、future 取消回 pending 和 interrupted/counts 状态
 - 共享 `ApiClient` 请求并发上限、429 冷却、既有请求重试和客户端关闭时机
 - 多线程 JSONL 完整性，以及 worker 开始和 assembly 发布前的源文件 SHA-256 检查
+
+v1.6.0 第四阶段新增覆盖：
+
+- `--retry-failed` 的 latest/显式 batch ID 解析、互斥规则及 workers/max-files 组合
+- failed-only 原序选择、重复路径去重、独立子批次初始状态和父 manifest 字节保护
+- 空重试 no-op、重新规划和 source hash、缓存跳过、失败隔离、并发上限、stop 与 resume
+- 缺失源文件、损坏 latest/manifest，以及越界、绝对、UNC、驱动器、符号链接和非 Markdown
+  历史路径的拒绝
 
 ## Non-blocking Follow-ups
 

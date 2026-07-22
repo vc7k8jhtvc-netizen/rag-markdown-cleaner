@@ -36,6 +36,9 @@ MAX_RETRIES = 3
 RETRY_BASE_SECONDS = 5.0
 MAX_RETRY_WAIT_SECONDS = 300.0
 MAX_CONSECUTIVE_FAILURES = 5
+BATCH_ID_PATTERN = re.compile(
+    r"^[0-9]{8}T[0-9]{12}Z-[0-9a-f]{12}$"
+)
 
 REQUIRE_CONFIRMATION = True
 MIN_WORKERS = 1
@@ -632,6 +635,17 @@ def parse_args(
             "省略 batch ID 时使用 latest"
         ),
     )
+    parser.add_argument(
+        "--retry-failed",
+        nargs="?",
+        const="latest",
+        default="",
+        metavar="BATCH_ID",
+        help=(
+            "重试父批次中的 failed 文件；"
+            "省略 batch ID 时使用 latest"
+        ),
+    )
 
     strict_group = (
         parser.add_mutually_exclusive_group()
@@ -728,6 +742,43 @@ def validate_args(
         "resume_batch",
         "",
     )
+    retry_failed = getattr(
+        args,
+        "retry_failed",
+        "",
+    )
+
+    if (
+        retry_failed
+        and retry_failed != "latest"
+        and not BATCH_ID_PATTERN.fullmatch(retry_failed)
+    ):
+        raise RuntimeError(
+            f"无效 batch ID：{retry_failed!r}"
+        )
+
+    if retry_failed and resume_batch:
+        raise RuntimeError(
+            "--retry-failed 不能与 --resume-batch 同时使用"
+        )
+
+    if retry_failed and getattr(
+        args,
+        "selection_file",
+        "",
+    ):
+        raise RuntimeError(
+            "--retry-failed 不能与 --selection-file 同时使用"
+        )
+
+    if retry_failed and getattr(
+        args,
+        "dry_run",
+        False,
+    ):
+        raise RuntimeError(
+            "--retry-failed 不能与 --dry-run 同时使用"
+        )
 
     if resume_batch and getattr(
         args,
