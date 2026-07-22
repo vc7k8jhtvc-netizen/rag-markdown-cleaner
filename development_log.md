@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current branch: `release/v1.6.0`
+Current branch: `release/v1.6.1`
 
 Phase 1:
 
@@ -17,6 +17,12 @@ Phase 2:
 
 Next stage:
 
+- v1.6.1 进入发布候选准备，尚未发布。根因是 Git blob 与 GitHub Source ZIP 中的 `.bat`
+  使用 LF，而本地 `core.autocrlf=true` 掩盖了该问题；热修复增加 `.gitattributes`、菜单
+  空输入/EOF 控制流保护和启动失败保护。
+- develop 热修复合并提交为 `9d0e599a22f7ded316ac5180cf8ef856b8716cce`；launcher
+  针对性测试为 18 passed，热修复完整基线为 277 passed，develop CI #22 六项全绿。
+- 下一步：release/v1.6.1 远端候选验证。中文菜单、一键安装和菜单精简保留为后续独立工作。
 - [x] v1.6.0 已于 2026-07-23 正式发布；标签 `v1.6.0` 指向 main 发布提交
   `ffcc8d39b53d4164dec74f4e160d67315c1421c0`，GitHub Release 已创建并设为 latest。
 - 五个 v1.6.0 开发阶段已完成：`--selection-file`、串行 manifest/resume、workers 并发与
