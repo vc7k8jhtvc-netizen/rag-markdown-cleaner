@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current branch: `release/v1.5.0`
+Current branch: `develop`
 
 Phase 1:
 
@@ -17,10 +17,13 @@ Phase 2:
 
 Next stage:
 
-- [x] v1.5.0 发布准备完成（正式 tag 和 GitHub Release 尚未创建）
+- [x] v1.5.0 已于 2026-07-22 正式发布
 - 软件版本以 `pyproject.toml` 为权威来源，已从此前基线 `1.4.1` 向前递增至
   `1.5.0`；原 v0.3.0 发布规划已纠正。Phase 1、Phase 2 是开发阶段编号，不是软件版本号。
-- 下一步为创建 v1.5.0 正式标签与 GitHub Release。
+- 正式标签 `v1.5.0` 指向提交 `22644c6a00c494325b066c7105afb8b5b512f399`；
+  GitHub Release 已创建并设为 latest。
+- 发布验证为 139 passed，Windows、Ubuntu 和多 Python 版本 CI 全部通过；未上传 PyPI。
+- 下一阶段：调查一键开始菜单、多文件选择和自定义 1-N 并发处理。
 
 ## Git History
 
@@ -37,6 +40,9 @@ Next stage:
 - 2026-07-22: v1.5.0 发布候选准备完成；同步项目、运行时和 README 版本，新增
   CHANGELOG、版本一致性测试、外部 `prompt.md` 配置测试，以及 Windows/Linux CI
   和 wheel/sdist 构建检查。`prompt.md` 保持为用户工作目录中的外部必需配置。
+- 2026-07-22: v1.5.0 正式发布；标签 `v1.5.0` 指向正式提交
+  `22644c6a00c494325b066c7105afb8b5b512f399`，GitHub Release 已创建并设为 latest；
+  139 项测试与 Windows/Ubuntu 多 Python 版本 CI 全部通过，未上传 PyPI。
 
 ## Known Issues
 
