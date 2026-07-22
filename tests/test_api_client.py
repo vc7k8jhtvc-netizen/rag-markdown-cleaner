@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -467,3 +469,119 @@ def test_http_401_is_not_retried(
         client.close()
 
     assert request_count == 1
+
+
+def test_configured_request_concurrency_never_exceeds_workers(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    disable_model_budget(monkeypatch)
+    active = 0
+    maximum = 0
+    entered = threading.Event()
+    release = threading.Event()
+    guard = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, maximum
+        with guard:
+            active += 1
+            maximum = max(maximum, active)
+            if active == 2:
+                entered.set()
+        release.wait(timeout=2)
+        with guard:
+            active -= 1
+        return build_sse_response(request, text="ok")
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    client.configure_concurrency(2)
+    install_mock_transport(client, handler)
+
+    def request(index: int) -> None:
+        client.stream_request(
+            system_prompt="prompt",
+            user_message=f"source {index}",
+            file_index=index,
+            total_files=3,
+            part_number=1,
+            total_parts=1,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            sleep_fn=lambda *_args: None,
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(request, index) for index in range(3)]
+            assert entered.wait(timeout=2)
+            assert maximum == 2
+            release.set()
+            for future in futures:
+                future.result(timeout=2)
+    finally:
+        client.close()
+
+    assert maximum == 2
+
+
+def test_shared_rate_limit_cooldown_blocks_until_deadline(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    disable_model_budget(monkeypatch)
+    current = [10.0]
+    wait_values: list[float] = []
+    wait_entered = threading.Event()
+    advance_clock = threading.Event()
+    cooldown_passed = threading.Event()
+
+    class AdvancingCondition:
+        def __enter__(self) -> AdvancingCondition:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> None:
+            assert timeout is not None
+            wait_entered.set()
+            assert advance_clock.wait(timeout=2)
+            wait_values.append(timeout)
+            current[0] += timeout
+
+        def notify_all(self) -> None:
+            return None
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    client._monotonic = lambda: current[0]
+    client._cooldown_condition = AdvancingCondition()
+
+    try:
+        client._extend_rate_limit_cooldown(3.0)
+        waiter = threading.Thread(
+            target=lambda: (
+                client._wait_for_shared_cooldown(tmp_path / "stop.flag"),
+                cooldown_passed.set(),
+            )
+        )
+        waiter.start()
+        assert wait_entered.wait(timeout=2)
+        assert cooldown_passed.is_set() is False
+        advance_clock.set()
+        waiter.join(timeout=2)
+        assert not waiter.is_alive()
+    finally:
+        client.close()
+
+    assert cooldown_passed.is_set() is True
+    assert current[0] >= 13.0
+    assert sum(wait_values) == pytest.approx(3.0)
