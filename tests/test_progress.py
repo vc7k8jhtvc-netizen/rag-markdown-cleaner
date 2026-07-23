@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import sys
 import threading
 from pathlib import Path
 
@@ -128,6 +130,34 @@ def test_batch_progress_formats_manifest_counts() -> None:
         "批次进度：已完成 1/10｜成功 1｜跳过 0｜失败 0｜"
         "中断 0｜处理中 2｜待处理 7"
     )
+
+
+def test_cp936_progress_output_escapes_unencodable_path(monkeypatch) -> None:
+    reporter = ProgressReporter()
+    console = ProgressConsole(reporter)
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp936", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    console.write_event(
+        ProgressEvent(
+            file_index=1,
+            total_files=1,
+            relative_path=Path("资料/emoji-😀-𠀀-e\u0301.md"),
+            kind="chunk_completed",
+            part_number=1,
+            total_parts=2,
+        )
+    )
+    stream.flush()
+    text = buffer.getvalue().decode("cp936")
+
+    assert text.endswith("\n")
+    assert "[1/1]" in text
+    assert "分片 1/2" in text
+    assert "\\U0001f600" in text
+    assert "\\U00020000" in text
+    assert "\\u0301" in text
 
 
 def test_workers_queue_events_and_only_main_console_writes_stdout(

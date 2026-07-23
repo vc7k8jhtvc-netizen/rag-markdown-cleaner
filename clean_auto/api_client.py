@@ -1059,20 +1059,20 @@ class ApiClient:
                 reporter.file_event(
                     context,
                     "detail",
-                    message=f"已保存部分结果：{partial_path}",
+                    message=f"已保存部分结果：{partial_path.name}",
                 )
             elif reporter is not None:
-                reporter.notice(f"已保存部分结果：{partial_path}")
+                reporter.notice(f"已保存部分结果：{partial_path.name}")
 
-        except Exception as save_exc:
+        except Exception:
             if reporter is not None and context is not None:
                 reporter.file_event(
                     context,
                     "detail",
-                    message=f"保存部分结果失败：{compact_error(save_exc)}",
+                    message="保存部分结果失败",
                 )
             elif reporter is not None:
-                reporter.notice(f"保存部分结果失败：{compact_error(save_exc)}")
+                reporter.notice("保存部分结果失败")
 
     def stream_request(
         self,

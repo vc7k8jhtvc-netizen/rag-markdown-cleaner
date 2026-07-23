@@ -74,6 +74,7 @@ def final_output_is_current(
     prompt_sha256: str,
     model: str,
     base_url: str,
+    strict_validation: bool = False,
 ) -> bool:
     """
     检查完整合并文件和 metadata 是否存在且对应当前分片计划。
@@ -128,6 +129,8 @@ def final_output_is_current(
             "model": model,
             "base_url": base_url.rstrip("/"),
             "part_count": len(plan.chunks),
+            "strict_validation": strict_validation,
+            "normalization_policy": "preserve-outer-fence-v1",
         }
 
         for key, expected_value in (
@@ -153,6 +156,7 @@ def plan_needs_processing(
     prompt_sha256: str,
     model: str,
     base_url: str,
+    strict_validation: bool = False,
 ) -> bool:
     """
     判断文件是否需要进入处理流程。
@@ -169,6 +173,7 @@ def plan_needs_processing(
         prompt_sha256=prompt_sha256,
         model=model,
         base_url=base_url,
+        strict_validation=strict_validation,
     ):
         return True
 
@@ -177,6 +182,7 @@ def plan_needs_processing(
         prompt_sha256=prompt_sha256,
         model=model,
         base_url=base_url,
+        strict_validation=strict_validation,
     )
 
 
@@ -613,6 +619,7 @@ def main(
                         ),
                         model=config.model,
                         base_url=config.base_url,
+                        strict_validation=config.strict_validation,
                     )
                 )
 
@@ -627,6 +634,7 @@ def main(
                     ),
                     model=config.model,
                     base_url=config.base_url,
+                    strict_validation=config.strict_validation,
                 ):
                     pending_plans.append(plan)
                     continue

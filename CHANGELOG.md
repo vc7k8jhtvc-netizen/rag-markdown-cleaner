@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.7.2] - 2026-07-24
+
+### Fixed
+
+- 修复 source snapshot、chunks 与 source SHA-256 可能来自不同文件版本的竞态，拒绝使用不一致计划。
+- 将 strict validation 和 Markdown 规范策略纳入 chunk 与最终输出缓存身份，避免严格模式复用宽松缓存。
+- 修复 CP936 无法表示的路径导致进度输出崩溃；不可表示字符以稳定转义保留。
+- 新增带文件序号、相对路径、分片号和脱敏错误摘要的失败分片进度事件；partial/review 进度不再显示绝对路径。
+- 保留合法 fenced Markdown 与有意义首尾空白，不再自动剥离整篇 outer code fence。
+
+### Known limitations
+
+- Windows PowerShell 5.1 重定向输出可能因宿主表现为 CP936 或 UTF-16LE，需要按实际编码读取。
+- 本机未安装 PowerShell 7，本版本尚未进行 PowerShell 7 手工验证。
+
 ## [1.7.1] - 2026-07-24
 
 ### Fixed

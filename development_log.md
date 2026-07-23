@@ -233,3 +233,15 @@ v1.6.0 第五阶段新增覆盖：
 - 已验证：299 passed、Ruff、Build、Twine 和 GitHub CI；localhost mock 下的真实 CLI 多文件并发、429、pause/resume、stop/partial、缓存跳过、CMD CP936 重定向及输入文件 SHA256 前后不变。
 - 已知限制：PowerShell 7 未验证；PowerShell 5.1 重定向输出可能因宿主表现为 CP936 或 UTF-16LE，需要按实际编码读取，这不是已解决的程序缺陷。
 - 合并到 `develop` 不代表已合并到 `main`；未创建 Tag、Release，也未执行版本发布。
+
+## v1.7.2 未发布完整性补丁
+
+2026-07-24：在 `fix/v1.7.2-integrity` 分支准备 v1.7.1 后的可靠性修复，尚未发布。
+
+- 修复 source snapshot、chunks 与 SHA-256 计划的一致性竞态，并将 `strict_validation` 与输出规范纳入 chunk/final cache identity。
+- 修复 CP936 不可编码路径导致的进度输出崩溃，新增带文件和分片上下文的 `chunk_failed` 事件，并清理 partial/review 进度中的绝对路径。
+- 保留合法 fenced Markdown 及有意义首尾空白；分片边界仅做必要的分隔整理。
+- 回归验证：311 passed、Ruff、`git diff --check`、build、Twine；Windows PowerShell 5.1/CMD CP936 mock 输出探针通过。PowerShell 7 未验证。
+- 本阶段未修改版本号、README、CHANGELOG、Tag 或 GitHub Release；尚未合并到 `develop` 或 `main`。
+
+2026-07-24：`release/v1.7.2` 已从包含完整性修复的 `develop` 准备发布元数据；版本更新为 1.7.2，并新增对应 CHANGELOG 条目。尚未合并到 `main`，尚未创建 Tag、GitHub Release 或上传任何包仓库。

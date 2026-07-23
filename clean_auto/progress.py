@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ ProgressKind = Literal[
     "chunk_started",
     "chunk_completed",
     "chunk_skipped",
+    "chunk_failed",
     "completed",
     "skipped",
     "failed",
@@ -100,6 +102,11 @@ def format_progress_event(event: ProgressEvent) -> str:
         return f"{prefix}分片完成：{path}（分片 {event.part_number}/{event.total_parts}）"
     if event.kind == "chunk_skipped":
         return f"{prefix}跳过缓存：{path}（分片 {event.part_number}/{event.total_parts}）"
+    if event.kind == "chunk_failed":
+        return (
+            f"{prefix}分片失败：{path}（"
+            f"{_file_detail(event, '错误：' + (event.error or '未知错误'))}）"
+        )
     if event.kind == "retrying":
         detail = _file_detail(
             event,
@@ -205,7 +212,16 @@ class ProgressConsole:
         self._reporter = reporter
 
     def write_event(self, event: ProgressEvent) -> None:
-        print(format_progress_event(event))
+        text = format_progress_event(event)
+        stream = sys.stdout
+        encoding = getattr(stream, "encoding", None)
+        if encoding:
+            text = text.encode(
+                encoding,
+                errors="backslashreplace",
+            ).decode(encoding)
+        stream.write(text + "\n")
+        stream.flush()
 
     def drain(self) -> None:
         for event in self._reporter.drain():

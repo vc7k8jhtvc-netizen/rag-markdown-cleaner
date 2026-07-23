@@ -78,6 +78,7 @@ def write_valid_final_output(
     prompt_sha256: str,
     model: str,
     base_url: str,
+    strict_validation: bool = False,
 ) -> tuple[Path, Path]:
     """
     写入一组符合当前完整文件 metadata 规则的测试数据。
@@ -129,6 +130,8 @@ def write_valid_final_output(
         "part_count": len(
             plan.chunks
         ),
+        "strict_validation": strict_validation,
+        "normalization_policy": "preserve-outer-fence-v1",
         "output_sha256": sha256_text(
             final_text
         ),
@@ -262,6 +265,29 @@ def test_valid_final_output_is_complete(
         prompt_sha256=prompt_sha256,
         model=model,
         base_url=base_url,
+    )
+
+
+def test_strict_mode_does_not_reuse_lenient_final_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    plan = make_plan(tmp_path)
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        strict_validation=False,
+    )
+    disable_pending_chunk_check(monkeypatch)
+
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        strict_validation=True,
     )
 
 
