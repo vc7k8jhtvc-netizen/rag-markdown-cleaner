@@ -256,3 +256,5 @@ v1.6.0 第五阶段新增覆盖：
 - 先添加失败回归测试，v1.7.2 实现定向运行得到 9 failed / 4 passed；修复后新增覆盖分片原始字节/hash、保守拒绝旧 stripped hash、真实 `process_file()` 当次 assembly、第二次零 API cache reuse 和 SSE mock transport 保真。
 - 验证结果：324 passed、Ruff、`git diff --check`、build、Twine 和 wheel/sdist 受限路径检查通过；Windows PowerShell 5.1 与 CMD 的中文空格临时副本各 324 passed。
 - 本机没有 PowerShell 7，未安装或修改系统配置；本阶段未修改版本号、README、CHANGELOG、Tag、GitHub Release，也未上传 PyPI 或额外 Release assets。
+
+2026-07-24：`release/v1.7.3` 已从合入修复 PR #12 的最新 `develop` 准备发布元数据；项目、运行时和版本测试更新为 1.7.3，并新增对应 CHANGELOG 条目。README 现有保真说明已覆盖本次用户可见行为，无需调整；尚未合并到 `main`，尚未创建 Tag 或 GitHub Release，也未上传 PyPI 或额外 Release assets。
