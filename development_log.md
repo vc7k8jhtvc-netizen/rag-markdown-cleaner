@@ -223,3 +223,13 @@ v1.6.0 第五阶段新增覆盖：
 - 已验证：`.venv\\Scripts\\python.exe -m pytest -o addopts='' -q` 共 299 passed；ruff 和 `git diff --check` 通过。
 - Windows PowerShell 5.1 + Python 3.14.6 的 mock 事件链路和 CMD CP936 stdout 重定向检查已通过；本机没有 PowerShell 7，未进行 PS7 验收。
 - 构建和 twine 检查已通过；本修复尚未提交、推送或创建 PR。
+
+## PR #6 合并记录
+
+2026-07-24：PR #6 已以普通 merge commit 合并到 `develop`。
+
+- Merge commit：`b7af8d3a8fee05398f527b7c06eb69b04996293a`；候选修复 commit：`d3ccaae8d7dbe611f753daba12df909c60bb3122`。
+- 修复范围包括 `ProgressContext`、队列化 worker 事件、请求等待与重试、暂停与恢复、partial/review/质量提示、分片完成与缓存跳过，以及基于 manifest 的批次进度计数。
+- 已验证：299 passed、Ruff、Build、Twine 和 GitHub CI；localhost mock 下的真实 CLI 多文件并发、429、pause/resume、stop/partial、缓存跳过、CMD CP936 重定向及输入文件 SHA256 前后不变。
+- 已知限制：PowerShell 7 未验证；PowerShell 5.1 重定向输出可能因宿主表现为 CP936 或 UTF-16LE，需要按实际编码读取，这不是已解决的程序缺陷。
+- 合并到 `develop` 不代表已合并到 `main`；未创建 Tag、Release，也未执行版本发布。
