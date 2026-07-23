@@ -2,7 +2,13 @@
 
 ## Current State
 
-Current branch: `feature/install-environment`
+Current branch: `release/v1.7.0`
+
+## v1.7.0 Release Preparation (2026-07-23)
+
+- [x] v1.7.0 三个开发阶段已合入 develop：文件级并发中文进度事件、中文 PowerShell 菜单、Windows 一键安装/修复项目内 `.venv`。
+- [x] 已在 release/v1.7.0 统一更新项目版本来源、版本测试、README 当前版本和 CHANGELOG v1.7.0 条目。
+- [x] 已记录 Source archive、Windows PowerShell 5.1 和完整质量门禁的发布候选验证范围；尚未创建 v1.7.0 tag 或 GitHub Release。
 
 ## v1.7.0 Phase 3: Windows Environment Installer (2026-07-23)
 
