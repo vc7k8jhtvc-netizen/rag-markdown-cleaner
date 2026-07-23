@@ -118,13 +118,7 @@ def remove_outer_code_fence(text: str) -> str:
     正文
     ```
     """
-    text = text.strip()
-
-    match = OUTER_CODE_FENCE_PATTERN.fullmatch(text)
-
-    if match:
-        return match.group(1).strip()
-
+    # Model output is user content; preserve valid Markdown verbatim.
     return text
 
 

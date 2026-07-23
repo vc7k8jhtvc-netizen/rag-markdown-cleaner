@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import (
+    decode_text_bytes,
     FilePlan,
     atomic_write_text,
     now_iso,
@@ -20,6 +22,9 @@ from .config import (
 FENCE_START_PATTERN = re.compile(
     r"^(?P<indent> {0,3})(?P<fence>`{3,}|~{3,})"
 )
+
+
+NORMALIZATION_POLICY = "preserve-outer-fence-v1"
 
 SENTENCE_END_PATTERN = re.compile(
     r"[。！？；.!?;][ \t]*"
@@ -1023,6 +1028,7 @@ def build_expected_metadata(
     base_url: str,
     part_number: int,
     total_parts: int,
+    strict_validation: bool = False,
 ) -> dict[str, Any]:
     return {
         "source_file": (
@@ -1035,6 +1041,8 @@ def build_expected_metadata(
         "base_url": base_url.rstrip("/"),
         "part_number": part_number,
         "total_parts": total_parts,
+        "strict_validation": strict_validation,
+        "normalization_policy": NORMALIZATION_POLICY,
     }
 
 
@@ -1192,8 +1200,10 @@ def build_file_plan(
         )
     )
 
-    source_text = read_text(
-        resolved_source
+    raw_source = resolved_source.read_bytes()
+    source_text = decode_text_bytes(
+        raw_source,
+        resolved_source,
     )
 
     file_size_after = (
@@ -1211,12 +1221,16 @@ def build_file_plan(
         max_chars,
     )
 
+    source_sha256 = hashlib.sha256(raw_source).hexdigest()
+    if sha256_file(resolved_source) != source_sha256:
+        raise RuntimeError(
+            f"文件发生变化，拒绝使用旧计划：{relative_path}"
+        )
+
     return FilePlan(
         source_path=resolved_source,
         relative_path=relative_path,
-        source_sha256=sha256_file(
-            resolved_source
-        ),
+        source_sha256=source_sha256,
         source_chars=len(source_text),
         chunks=chunks,
         output_dir=make_output_dir(
@@ -1254,6 +1268,7 @@ def plan_has_pending_chunks(
     prompt_sha256: str,
     model: str,
     base_url: str,
+    strict_validation: bool = False,
 ) -> bool:
     if plan.is_empty:
         return False
@@ -1283,6 +1298,7 @@ def plan_has_pending_chunks(
             base_url=base_url,
             part_number=part_number,
             total_parts=total_parts,
+            strict_validation=strict_validation,
         )
 
         if not is_completed_chunk(

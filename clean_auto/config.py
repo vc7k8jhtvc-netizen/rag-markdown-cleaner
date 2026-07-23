@@ -419,7 +419,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_text(path: Path) -> str:
+def decode_text_bytes(raw: bytes, path: Path) -> str:
     last_error: Exception | None = None
 
     for encoding in (
@@ -429,18 +429,17 @@ def read_text(path: Path) -> str:
         "gbk",
     ):
         try:
-            with path.open(
-                "r",
-                encoding=encoding,
-                newline="",
-            ) as file:
-                return file.read()
+            return raw.decode(encoding)
         except UnicodeDecodeError as exc:
             last_error = exc
 
     raise RuntimeError(
         f"无法识别文件编码：{path}"
     ) from last_error
+
+
+def read_text(path: Path) -> str:
+    return decode_text_bytes(path.read_bytes(), path)
 
 
 def strip_outer_code_fence(
