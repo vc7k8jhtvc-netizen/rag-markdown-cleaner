@@ -741,7 +741,7 @@ class ApiClient:
                     ):
                         partial = "".join(
                             answer_parts
-                        ).strip()
+                        )
 
                         exc = GracefulStop(
                             "检测到停止文件："
@@ -794,7 +794,7 @@ class ApiClient:
                     ):
                         partial = "".join(
                             answer_parts
-                        ).strip()
+                        )
 
                         raise RetryableRequestError(
                             "SSE 单个事件异常过大，"
@@ -811,7 +811,7 @@ class ApiClient:
                     ) as exc:
                         partial = "".join(
                             answer_parts
-                        ).strip()
+                        )
 
                         raise RetryableRequestError(
                             "SSE 返回了无法解析的 JSON："
@@ -841,7 +841,7 @@ class ApiClient:
 
                         partial = "".join(
                             answer_parts
-                        ).strip()
+                        )
 
                         if _api_error_is_retryable(
                             error_value
@@ -909,7 +909,7 @@ class ApiClient:
                         ):
                             partial = "".join(
                                 answer_parts
-                            ).strip()
+                            )
 
                             error = RuntimeError(
                                 "模型输出超过安全上限 "
@@ -935,7 +935,7 @@ class ApiClient:
         except KeyboardInterrupt as exc:
             partial = "".join(
                 answer_parts
-            ).strip()
+            )
 
             stop_exc = GracefulStop(
                 "用户按下 Ctrl+C"
@@ -952,7 +952,7 @@ class ApiClient:
         except httpx.RequestError as exc:
             partial = "".join(
                 answer_parts
-            ).strip()
+            )
 
             raise RetryableRequestError(
                 "流式请求发生网络错误："
@@ -962,7 +962,7 @@ class ApiClient:
 
         result_text = "".join(
             answer_parts
-        ).strip()
+        )
 
         bad_reasons = [
             reason
@@ -998,7 +998,7 @@ class ApiClient:
                 partial_text=result_text,
             )
 
-        if not result_text:
+        if not result_text.strip():
             raise RuntimeError(
                 "接口没有返回模型正文"
             )

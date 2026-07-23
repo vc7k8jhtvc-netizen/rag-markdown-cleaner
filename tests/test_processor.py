@@ -151,7 +151,7 @@ def _write_completed_chunk(
         warnings=[],
     )
     metadata["status"] = "completed"
-    output_path.write_text(result + "\n", encoding="utf-8")
+    output_path.write_text(result, encoding="utf-8", newline="")
     metadata_path.write_text(
         json.dumps(metadata),
         encoding="utf-8",

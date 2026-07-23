@@ -188,7 +188,7 @@ def write_completed_chunks(
         metadata["status"] = "completed"
         atomic_write_text(
             output_path,
-            result + "\n",
+            result,
         )
         metadata_path.write_text(
             json.dumps(metadata),

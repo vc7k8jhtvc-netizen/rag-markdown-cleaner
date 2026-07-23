@@ -81,16 +81,22 @@ def _remove_front_matter(
     Front Matter 没有正确闭合时保留原文，
     避免误删教材正文。
     """
-    stripped = text.lstrip(
-        "\ufeff \t\r\n"
-    )
+    content_start = 0
+    while (
+        content_start < len(text)
+        and text[content_start]
+        in "\ufeff \t\r\n"
+    ):
+        content_start += 1
+
+    candidate = text[content_start:]
 
     match = FRONT_MATTER_PATTERN.match(
-        stripped
+        candidate
     )
 
     if match is None:
-        return text.strip()
+        return text
 
     fields, yaml_error = (
         parse_front_matter_with_error(
@@ -99,7 +105,7 @@ def _remove_front_matter(
     )
 
     if yaml_error is not None:
-        return text.strip()
+        return text
 
     field_errors, _ = (
         validate_front_matter_fields(
@@ -109,11 +115,12 @@ def _remove_front_matter(
     )
 
     if field_errors:
-        return text.strip()
+        return text
 
-    return stripped[
-        match.end():
-    ].strip()
+    return (
+        text[:content_start]
+        + candidate[match.end():]
+    )
 
 
 def _read_part_metadata(
@@ -635,12 +642,7 @@ def assemble_completed_file(
     # 生成候选完整文件
     # --------------------------------------------------------
 
-    final_text = part_texts[0]
-    for part_text in part_texts[1:]:
-        # Only normalize the boundary between independently generated chunks.
-        # The document's leading whitespace and final trailing whitespace remain
-        # exactly as returned by the model.
-        final_text = final_text.rstrip() + "\n\n" + part_text.lstrip()
+    final_text = "\n\n".join(part_texts)
 
     if not final_text:
         raise RuntimeError(

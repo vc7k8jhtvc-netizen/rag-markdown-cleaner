@@ -1088,13 +1088,13 @@ def is_completed_chunk(
     try:
         result = read_text(
             output_path
-        ).strip()
+        )
 
         metadata = json.loads(
             read_text(metadata_path)
         )
 
-        if not result:
+        if not result.strip():
             return False
 
         if not isinstance(metadata, dict):
@@ -1147,7 +1147,7 @@ def save_partial_response(
         f"{now_iso()} -->\n"
         f"<!-- reason: "
         f"{safe_reason} -->\n\n"
-        f"{text.rstrip()}\n"
+        f"{text}"
     )
 
     atomic_write_text(
