@@ -256,6 +256,43 @@ def test_successful_sse_stream(
     assert result.truncated is False
 
 
+def test_successful_sse_stream_preserves_outer_whitespace(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    disable_model_budget(monkeypatch)
+    expected = "\n```markdown\n\nbody  \n```\n\n"
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    install_mock_transport(
+        client,
+        lambda request: build_sse_response(request, text=expected),
+    )
+
+    try:
+        result = client.stream_request(
+            system_prompt="system prompt",
+            user_message="source body",
+            file_index=1,
+            total_files=1,
+            part_number=1,
+            total_parts=1,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            partial_path=tmp_path / "partial.md",
+            sleep_fn=lambda *_args: None,
+        )
+    finally:
+        client.close()
+
+    assert result.text == expected
+    assert result.received_chars == len(expected)
+
+
 def test_request_waiting_event_is_visible_before_mock_response_is_released(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -160,7 +160,7 @@ def test_valid_repeated_front_matter_is_removed() -> None:
     )
 
     assert _remove_front_matter(text) == (
-        "后续正文"
+        "\n后续正文"
     )
 
 
@@ -206,8 +206,8 @@ def test_completed_parts_are_assembled_in_order(
     )
 
     expected_text = (
-        f"{FRONT_MATTER}\n\nFirst body\n\n"
-            "Second body\n\nThird body"
+        f"{FRONT_MATTER}\n\nFirst body\n\n\n"
+        "Second body\n\nThird body"
     )
     assert final_path.read_text(encoding="utf-8") == expected_text
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
