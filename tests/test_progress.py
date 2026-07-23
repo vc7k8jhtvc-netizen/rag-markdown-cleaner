@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from clean_auto.progress import (
+    ProgressContext,
     ProgressConsole,
     ProgressEvent,
     ProgressReporter,
@@ -39,7 +40,59 @@ def test_progress_event_formats_complete_chinese_file_lines() -> None:
     )
     assert format_progress_event(
         _event("chunk_started", part_number=3, total_parts=12)
-    ) == "[1/3] 处理中：法规/安全生产法.md（分片 3/12）"
+    ) == (
+        "[1/3] 处理中：法规/安全生产法.md"
+        "（分片 3/12，正在请求并等待模型返回）"
+    )
+    assert format_progress_event(
+        _event("chunk_completed", part_number=3, total_parts=12)
+    ) == "[1/3] 分片完成：法规/安全生产法.md（分片 3/12）"
+    assert format_progress_event(
+        _event("chunk_skipped", part_number=3, total_parts=12)
+    ) == "[1/3] 跳过缓存：法规/安全生产法.md（分片 3/12）"
+    assert format_progress_event(
+        ProgressEvent(
+            file_index=1,
+            total_files=3,
+            relative_path=Path("法规/安全生产法.md"),
+            kind="retrying",
+            part_number=3,
+            total_parts=12,
+            attempt=1,
+            max_attempts=3,
+            wait_seconds=5.0,
+        )
+    ) == (
+        "[1/3] 重试中：法规/安全生产法.md"
+        "（分片 3/12，第 1/3 次，等待 5 秒）"
+    )
+    assert format_progress_event(
+        ProgressEvent(
+            file_index=1,
+            total_files=3,
+            relative_path=Path("法规/安全生产法.md"),
+            kind="paused",
+            part_number=3,
+            total_parts=12,
+        )
+    ) == (
+        "[1/3] 已暂停：法规/安全生产法.md"
+        "（分片 3/12，等待 pause.flag 删除）"
+    )
+    assert format_progress_event(
+        ProgressEvent(
+            file_index=1,
+            total_files=3,
+            relative_path=Path("法规/安全生产法.md"),
+            kind="quality_warning",
+            part_number=3,
+            total_parts=12,
+            message="需要人工复核",
+        )
+    ) == (
+        "[1/3] 质量提示：法规/安全生产法.md"
+        "（分片 3/12，需要人工复核）"
+    )
     assert format_progress_event(_event("skipped")) == (
         "[1/3] 跳过缓存：法规/安全生产法.md"
     )
@@ -51,6 +104,29 @@ def test_progress_event_formats_complete_chinese_file_lines() -> None:
     )
     assert format_progress_event(_event("interrupted", error="检测到停止文件")) == (
         "[1/3] 已中断：法规/安全生产法.md（原因：检测到停止文件）"
+    )
+
+
+def test_batch_progress_formats_manifest_counts() -> None:
+    event = ProgressEvent(
+        file_index=None,
+        total_files=None,
+        relative_path=None,
+        kind="batch_progress",
+        counts={
+            "total": 10,
+            "succeeded": 1,
+            "skipped": 0,
+            "failed": 0,
+            "interrupted": 0,
+            "running": 2,
+            "pending": 7,
+        },
+    )
+
+    assert format_progress_event(event) == (
+        "批次进度：已完成 1/10｜成功 1｜跳过 0｜失败 0｜"
+        "中断 0｜处理中 2｜待处理 7"
     )
 
 
@@ -118,7 +194,17 @@ def test_control_reports_pause_through_the_worker_queue(
         pause_file=pause_file,
         stop_file=stop_file,
         reporter=reporter,
+        context=ProgressContext(
+            file_index=1,
+            total_files=2,
+            relative_path=Path("法规/安全生产法.md"),
+            part_number=3,
+            total_parts=12,
+        ),
     )
 
     assert capsys.readouterr().out == ""
-    assert [event.kind for event in reporter.drain()] == ["notice", "notice"]
+    events = reporter.drain()
+    assert [event.kind for event in events] == ["paused", "resumed"]
+    assert all(event.file_index == 1 for event in events)
+    assert all(event.relative_path == Path("法规/安全生产法.md") for event in events)

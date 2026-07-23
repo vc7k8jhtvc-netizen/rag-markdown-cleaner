@@ -16,7 +16,7 @@ from .config import (
 )
 from .control import wait_if_paused
 from .processor import process_file
-from .progress import ProgressEvent, ProgressReporter
+from .progress import ProgressContext, ProgressEvent, ProgressReporter
 
 
 FileStatus = Literal["succeeded", "failed", "interrupted"]
@@ -65,6 +65,11 @@ def _run_file(
             config.pause_file,
             config.stop_file,
             reporter=reporter,
+            context=ProgressContext(
+                file_index=index + 1,
+                total_files=total_files,
+                relative_path=plan.relative_path,
+            ),
         )
         ensure_source_unchanged(plan)
         outcome = process_fn(

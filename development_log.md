@@ -211,3 +211,15 @@ v1.6.0 第五阶段新增覆盖：
 - 在稳定环境中补充 `PermissionError` 测试
 - UTF-16 或自动编码探测支持需要单独设计
 - cleaned 输出继续遵循 UTF-8 和现有组装契约
+
+## v1.7.0 后进度可见性回归修复（未发布）
+
+2026-07-23：在 `fix/restore-progress-visibility` 分支补充文件级上下文进度事件。
+
+- `ProgressContext` 为 worker 事件携带文件序号、总数、相对路径和可选分片范围。
+- API 请求等待、重试等待、pause/resume、分片质量提示、完整文件质量提示、partial/review 提示均经线程安全队列输出。
+- 增加分片完成和缓存跳过事件；worker 不直接写 stdout，主线程统一格式化完整行。
+- 批次进度事件在主线程更新 manifest 状态后产生，计数来自当前 manifest；最终汇总仍读取 `finalize_manifest` 后的 `manifest["counts"]`。
+- 已验证：`.venv\\Scripts\\python.exe -m pytest -o addopts='' -q` 共 299 passed；ruff 和 `git diff --check` 通过。
+- Windows PowerShell 5.1 + Python 3.14.6 的 mock 事件链路和 CMD CP936 stdout 重定向检查已通过；本机没有 PowerShell 7，未进行 PS7 验收。
+- 构建和 twine 检查已通过；本修复尚未提交、推送或创建 PR。

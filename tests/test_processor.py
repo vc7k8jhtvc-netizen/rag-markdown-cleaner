@@ -19,6 +19,7 @@ from clean_auto.config import (
     RuntimeConfig,
     sha256_text,
 )
+from clean_auto.progress import ProgressReporter, format_progress_event
 
 
 class FakeClient:
@@ -34,6 +35,10 @@ class FakeClient:
         **kwargs: object,
     ) -> RequestResult:
         self.calls.append(kwargs)
+        reporter = kwargs.get("reporter")
+        context = kwargs.get("context")
+        if isinstance(reporter, ProgressReporter) and context is not None:
+            reporter.file_event(context, "chunk_started")
         response = self.responses[len(self.calls) - 1]
 
         if isinstance(response, Exception):
@@ -284,10 +289,12 @@ def test_completed_chunks_skip_api_but_still_trigger_assembly(
     _write_completed_chunk(plan, config, 1, "Clean result")
     client = FakeClient([AssertionError("API must not be called")])
     assembly_calls: list[FilePlan] = []
+    reporter = ProgressReporter()
 
     def fake_assemble(
         plan: FilePlan,
         config: RuntimeConfig,
+        **_kwargs: object,
     ) -> tuple[Path, Path]:
         del config
         assembly_calls.append(plan)
@@ -309,6 +316,7 @@ def test_completed_chunks_skip_api_but_still_trigger_assembly(
         config=config,
         client=client,
         initial_consecutive_failures=3,
+        reporter=reporter,
     )
 
     assert client.calls == []
@@ -317,6 +325,7 @@ def test_completed_chunks_skip_api_but_still_trigger_assembly(
     assert outcome.stats.skipped_parts == 1
     assert outcome.stats.failed_parts == 0
     assert outcome.consecutive_failures == 0
+    assert [event.kind for event in reporter.drain()] == ["chunk_skipped"]
 
 
 def test_any_chunk_failure_prevents_final_assembly(
@@ -383,3 +392,65 @@ def test_inherited_failure_count_can_trigger_automatic_stop(
     assert outcome.stats.failed_parts == 1
     assert outcome.consecutive_failures == MAX_CONSECUTIVE_FAILURES
     assert assembly_calls == []
+
+
+def test_chunk_request_and_quality_messages_are_contextual_worker_events(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    client = FakeClient(["cleaned"])
+    reporter = ProgressReporter()
+    warning = "输出保留比例低于复核阈值 70%，建议人工检查删除内容"
+    monkeypatch.setattr(processor, "validate_result", lambda **_kwargs: ([], []))
+    monkeypatch.setattr(
+        processor,
+        "assess_quality",
+        lambda **_kwargs: SimpleNamespace(
+            severe_errors=[],
+            review_required=True,
+            warnings=[warning],
+            retained_ratio=0.6,
+            removed_ratio=0.4,
+            to_dict=lambda: {
+                "severe_errors": [],
+                "warnings": [warning],
+                "review_required": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        processor,
+        "assemble_completed_file",
+        lambda **_kwargs: (tmp_path / "final.md", tmp_path / "final.json"),
+    )
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=2,
+        total_files=3,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+        reporter=reporter,
+    )
+
+    assert outcome.stats.success_parts == 1
+    assert capsys.readouterr().out == ""
+    events = reporter.drain()
+    assert [event.kind for event in events] == [
+        "chunk_started",
+        "quality_warning",
+        "quality_warning",
+        "chunk_completed",
+    ]
+    lines = [format_progress_event(event) for event in events]
+    assert lines[0] == (
+        "[2/3] 处理中：sample.md（分片 1/1，正在请求并等待模型返回）"
+    )
+    assert lines[1] == "[2/3] 质量提示：sample.md（分片 1/1，需要人工复核）"
+    assert lines[2] == f"[2/3] 质量提示：sample.md（分片 1/1，{warning}）"
+    assert lines[3] == "[2/3] 分片完成：sample.md（分片 1/1）"
+    assert all(not line.startswith("[提示]") for line in lines)

@@ -28,7 +28,7 @@ from .config import (
     compact_error,
 )
 from .control import wait_if_paused
-from .progress import ProgressReporter
+from .progress import ProgressContext, ProgressReporter
 from .model_budget import (
     ModelBudget,
     apply_output_token_limit,
@@ -571,6 +571,7 @@ class ApiClient:
         self,
         estimate: object,
         reporter: ProgressReporter | None,
+        context: ProgressContext | None = None,
     ) -> None:
         """
         在终端显示当前请求的粗略预算。
@@ -631,7 +632,9 @@ class ApiClient:
                 "未配置上下文窗口和输出 token 上限"
             )
 
-        if reporter is not None:
+        if reporter is not None and context is not None:
+            reporter.file_event(context, "detail", message=message)
+        elif reporter is not None:
             reporter.notice(message)
 
     def stream_once(
@@ -644,6 +647,7 @@ class ApiClient:
         total_parts: int,
         stop_file: Path | None = None,
         reporter: ProgressReporter | None = None,
+        context: ProgressContext | None = None,
     ) -> RequestResult:
         """
         执行一次流式请求。
@@ -672,7 +676,6 @@ class ApiClient:
                 user_message=user_message,
             )
         )
-
         answer_parts: list[str] = []
         received_events = 0
         received_chars = 0
@@ -1024,6 +1027,7 @@ class ApiClient:
         exc: Exception,
         partial_path: Path | None,
         reporter: ProgressReporter | None,
+        context: ProgressContext | None,
     ) -> None:
         """
         保存异常中携带的部分模型输出。
@@ -1051,14 +1055,24 @@ class ApiClient:
                 reason=compact_error(exc),
             )
 
-            if reporter is not None:
+            if reporter is not None and context is not None:
+                reporter.file_event(
+                    context,
+                    "detail",
+                    message=f"已保存部分结果：{partial_path}",
+                )
+            elif reporter is not None:
                 reporter.notice(f"已保存部分结果：{partial_path}")
 
         except Exception as save_exc:
-            if reporter is not None:
-                reporter.notice(
-                    f"保存部分结果失败：{compact_error(save_exc)}"
+            if reporter is not None and context is not None:
+                reporter.file_event(
+                    context,
+                    "detail",
+                    message=f"保存部分结果失败：{compact_error(save_exc)}",
                 )
+            elif reporter is not None:
+                reporter.notice(f"保存部分结果失败：{compact_error(save_exc)}")
 
     def stream_request(
         self,
@@ -1077,6 +1091,7 @@ class ApiClient:
         ]
         | None = None,
         reporter: ProgressReporter | None = None,
+        context: ProgressContext | None = None,
     ) -> RequestResult:
         """
         执行带重试的流式请求。
@@ -1106,7 +1121,12 @@ class ApiClient:
             MAX_RETRIES + 1,
         ):
             try:
-                wait_if_paused(pause_file, stop_file, reporter=reporter)
+                wait_if_paused(
+                    pause_file,
+                    stop_file,
+                    reporter=reporter,
+                    context=context,
+                )
 
                 if attempt > 1:
                     retry_after = getattr(
@@ -1149,7 +1169,15 @@ class ApiClient:
                         MAX_RETRY_WAIT_SECONDS,
                     )
 
-                    if reporter is not None:
+                    if reporter is not None and context is not None:
+                        reporter.file_event(
+                            context,
+                            "retrying",
+                            attempt=attempt - 1,
+                            max_attempts=MAX_RETRIES,
+                            wait_seconds=retry_after,
+                        )
+                    elif reporter is not None:
                         reporter.notice(
                             f"请求重试第 {attempt}/{MAX_RETRIES} 次，"
                             f"等待 {retry_after:.1f} 秒。"
@@ -1172,6 +1200,7 @@ class ApiClient:
                                 pause_file,
                                 stop_file,
                                 reporter=reporter,
+                                context=context,
                             )
 
                             remaining = (
@@ -1189,6 +1218,9 @@ class ApiClient:
                                 )
                             )
 
+                if reporter is not None and context is not None:
+                    reporter.file_event(context, "chunk_started")
+
                 return self.stream_once(
                     system_prompt=system_prompt,
                     user_message=user_message,
@@ -1198,6 +1230,7 @@ class ApiClient:
                     total_parts=total_parts,
                     stop_file=stop_file,
                     reporter=reporter,
+                    context=context,
                 )
 
             except KeyboardInterrupt as exc:
@@ -1210,6 +1243,7 @@ class ApiClient:
                     exc,
                     partial_path,
                     reporter,
+                    context,
                 )
                 raise
 
@@ -1220,6 +1254,7 @@ class ApiClient:
                     exc,
                     partial_path,
                     reporter,
+                    context,
                 )
 
                 if (
