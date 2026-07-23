@@ -51,7 +51,12 @@ from .control import (
 )
 from .locking import acquire_lock, release_lock
 from .processor import process_file
-from .progress import ProgressConsole, ProgressEvent, ProgressReporter
+from .progress import (
+    ProgressConsole,
+    ProgressContext,
+    ProgressEvent,
+    ProgressReporter,
+)
 from .selection import (
     load_selection_paths,
     resolve_input_paths,
@@ -645,6 +650,7 @@ def main(
                             plan.source_sha256
                         ),
                     )
+                    progress_reporter.batch_progress(manifest["counts"])
 
             except Exception as exc:
                 pending_plans.append(plan)
@@ -857,6 +863,9 @@ def main(
                                 status="succeeded",
                             )
 
+                        if manifest is not None:
+                            progress_reporter.batch_progress(manifest["counts"])
+
                     def mark_cancelled(
                         _index: int,
                         plan: FilePlan,
@@ -905,6 +914,12 @@ def main(
                         wait_if_paused(
                             config.pause_file,
                             config.stop_file,
+                            reporter=progress_reporter,
+                            context=ProgressContext(
+                                file_index=file_index,
+                                total_files=len(selected_plans),
+                                relative_path=plan.relative_path,
+                            ),
                         )
                         ensure_source_unchanged(plan)
 
@@ -973,6 +988,10 @@ def main(
                                     error="文件包含失败分片",
                                 )
                             )
+                            if manifest is not None:
+                                progress_reporter.batch_progress(
+                                    manifest["counts"]
+                                )
                         elif manifest is not None:
                             update_file(
                                 config.log_dir,
@@ -988,6 +1007,7 @@ def main(
                                     kind="completed",
                                 )
                             )
+                            progress_reporter.batch_progress(manifest["counts"])
 
                         if outcome.stopped:
                             stopped = True
@@ -1014,6 +1034,10 @@ def main(
                                     error="连续失败自动停止",
                                 )
                             )
+                            if manifest is not None and stats.failed_parts == 0:
+                                progress_reporter.batch_progress(
+                                    manifest["counts"]
+                                )
 
                             append_log(
                                 config.log_dir,
@@ -1037,6 +1061,7 @@ def main(
                             wait_for_enter_or_stop(
                                 config.pause_file,
                                 config.stop_file,
+                                reporter=progress_reporter,
                             )
 
                         if (
@@ -1048,6 +1073,12 @@ def main(
                                 config.pause_between_files,
                                 config.pause_file,
                                 config.stop_file,
+                                reporter=progress_reporter,
+                                context=ProgressContext(
+                                    file_index=file_index,
+                                    total_files=len(selected_plans),
+                                    relative_path=plan.relative_path,
+                                ),
                             )
 
                     except (
@@ -1081,6 +1112,12 @@ def main(
                                 error=error,
                             )
                         )
+                        if (
+                            manifest is not None
+                            and file_status(manifest, relative_path)
+                            == "interrupted"
+                        ):
+                            progress_reporter.batch_progress(manifest["counts"])
                         append_log(
                             config.log_dir,
                             "BATCH",
@@ -1123,18 +1160,34 @@ def main(
                                 error=error,
                             )
                         )
+                        if manifest is not None:
+                            progress_reporter.batch_progress(manifest["counts"])
 
                         if (
                             consecutive_failures
                             >= MAX_CONSECUTIVE_FAILURES
                         ):
                             stopped = True
-                            progress_reporter.notice(
-                                "连续文件失败达到阈值，停止本批次。"
+                            progress_reporter.file_event(
+                                ProgressContext(
+                                    file_index=file_index,
+                                    total_files=len(selected_plans),
+                                    relative_path=plan.relative_path,
+                                ),
+                                "detail",
+                                message="连续文件失败达到阈值，停止本批次",
                             )
                             break
 
-                        progress_reporter.notice("继续处理下一个文件。")
+                        progress_reporter.file_event(
+                            ProgressContext(
+                                file_index=file_index,
+                                total_files=len(selected_plans),
+                                relative_path=plan.relative_path,
+                            ),
+                            "detail",
+                            message="继续处理下一个文件",
+                        )
 
         if manifest is not None:
             finalize_manifest(

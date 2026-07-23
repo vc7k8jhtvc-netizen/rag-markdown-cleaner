@@ -37,7 +37,7 @@ from .metadata_schema import (
     add_schema_identity,
 )
 from .quality import assess_quality
-from .progress import ProgressEvent, ProgressReporter
+from .progress import ProgressContext, ProgressReporter
 from .validation import (
     remove_outer_code_fence,
     validate_result,
@@ -192,22 +192,19 @@ def process_file(
         plan.chunks,
         start=1,
     ):
+        progress_context = ProgressContext(
+            file_index=file_index,
+            total_files=total_files,
+            relative_path=plan.relative_path,
+            part_number=part_number,
+            total_parts=total_parts,
+        )
         wait_if_paused(
             config.pause_file,
             config.stop_file,
             reporter=reporter,
+            context=progress_context,
         )
-        if reporter is not None:
-            reporter.emit(
-                ProgressEvent(
-                    file_index=file_index,
-                    total_files=total_files,
-                    relative_path=plan.relative_path,
-                    kind="chunk_started",
-                    part_number=part_number,
-                    total_parts=total_parts,
-                )
-            )
 
         (
             output_path,
@@ -239,6 +236,8 @@ def process_file(
             metadata_path,
             expected,
         ):
+            if reporter is not None:
+                reporter.file_event(progress_context, "chunk_skipped")
             stats.success_parts += 1
             stats.skipped_parts += 1
             consecutive_failures = 0
@@ -284,8 +283,10 @@ def process_file(
                     pause_file,
                     stop_file,
                     reporter=reporter,
+                    context=progress_context,
                 ),
                 reporter=reporter,
+                context=progress_context,
             )
 
             result = remove_outer_code_fence(
@@ -432,11 +433,22 @@ def process_file(
 
             if quality.review_required:
                 if reporter is not None:
-                    reporter.notice("分片存在质量提示，需要人工复核。")
+                    reporter.file_event(
+                        progress_context,
+                        "quality_warning",
+                        message="需要人工复核",
+                    )
 
             if warnings:
                 if reporter is not None:
-                    reporter.notice("；".join(warnings))
+                    reporter.file_event(
+                        progress_context,
+                        "quality_warning",
+                        message="；".join(warnings),
+                    )
+
+            if reporter is not None:
+                reporter.file_event(progress_context, "chunk_completed")
 
             stats.success_parts += 1
             consecutive_failures = 0
@@ -505,6 +517,7 @@ def process_file(
                 config.pause_file,
                 config.stop_file,
                 reporter=reporter,
+                context=progress_context,
             )
 
     # Dry-run 只规划分片，不生成完整文件。
@@ -538,6 +551,11 @@ def process_file(
                     plan=plan,
                     config=config,
                     reporter=reporter,
+                    context=ProgressContext(
+                        file_index=file_index,
+                        total_files=total_files,
+                        relative_path=plan.relative_path,
+                    ),
                 )
 
         except Exception as exc:

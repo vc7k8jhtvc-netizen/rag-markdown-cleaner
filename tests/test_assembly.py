@@ -22,6 +22,7 @@ from clean_auto.config import (
     atomic_write_text,
     sha256_text,
 )
+from clean_auto.progress import ProgressContext, ProgressReporter, format_progress_event
 
 
 FRONT_MATTER = (
@@ -466,3 +467,92 @@ def test_review_path_cannot_escape_review_root(
             plan=plan,
             config=_make_config(tmp_path),
         )
+
+
+def test_complete_file_quality_warning_has_file_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    warning = "输出保留比例低于复核阈值 70%，建议人工检查删除内容"
+    monkeypatch.setattr(
+        assembly,
+        "assess_quality",
+        lambda **_kwargs: SimpleNamespace(
+            severe_errors=[],
+            review_required=True,
+            warnings=[warning],
+            retained_ratio=0.6,
+            removed_ratio=0.4,
+            to_dict=lambda: {
+                "severe_errors": [],
+                "warnings": [warning],
+                "review_required": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(assembly, "sync_review_copy", lambda **_kwargs: None)
+    reporter = ProgressReporter()
+
+    assembly.assemble_completed_file(
+        plan=plan,
+        config=config,
+        reporter=reporter,
+        context=ProgressContext(
+            file_index=2,
+            total_files=4,
+            relative_path=plan.relative_path,
+        ),
+    )
+
+    assert capsys.readouterr().out == ""
+    lines = [format_progress_event(event) for event in reporter.drain()]
+    assert lines == [
+        "[2/4] 质量提示：sample.md（完整文件需要人工复核）",
+        f"[2/4] 质量提示：sample.md（{warning}）",
+    ]
+
+
+def test_complete_file_warning_does_not_require_review_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    warning = "输出保留比例低于复核阈值 70%，建议人工检查删除内容"
+    monkeypatch.setattr(
+        assembly,
+        "assess_quality",
+        lambda **_kwargs: SimpleNamespace(
+            severe_errors=[],
+            review_required=False,
+            warnings=[warning],
+            retained_ratio=0.6,
+            removed_ratio=0.4,
+            to_dict=lambda: {
+                "severe_errors": [],
+                "warnings": [warning],
+                "review_required": False,
+            },
+        ),
+    )
+    monkeypatch.setattr(assembly, "sync_review_copy", lambda **_kwargs: None)
+    reporter = ProgressReporter()
+
+    assembly.assemble_completed_file(
+        plan=plan,
+        config=config,
+        reporter=reporter,
+        context=ProgressContext(
+            file_index=1,
+            total_files=1,
+            relative_path=plan.relative_path,
+        ),
+    )
+
+    lines = [format_progress_event(event) for event in reporter.drain()]
+    assert lines == [f"[1/1] 质量提示：sample.md（{warning}）"]
