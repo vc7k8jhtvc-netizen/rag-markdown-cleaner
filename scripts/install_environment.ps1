@@ -158,7 +158,7 @@ function Install-Project {
     }
 
     Write-InstallerMessage "正在使用项目 .venv 安装项目依赖..."
-    & $VenvPython -m pip install -e .
+    & $VenvPython -m pip install -e $ProjectRoot
     if ($LASTEXITCODE -ne 0) {
         throw "项目依赖安装失败，退出码：$LASTEXITCODE"
     }

@@ -394,6 +394,11 @@ def test_powershell_menu_safely_handles_missing_venv_in_available_hosts(
     hosts = [host for host in ("powershell.exe", "pwsh.exe") if shutil.which(host)]
     assert hosts
 
+    script = menu_path.read_text(encoding="utf-8-sig")
+    assert "function Clear-MenuHost" in script
+    assert script.count("Clear-Host") == 1
+    assert script.count("Clear-MenuHost") == 5
+
     for host in hosts:
         missing_venv_result = subprocess.run(
             [

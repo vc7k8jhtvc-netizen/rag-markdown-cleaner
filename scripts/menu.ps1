@@ -15,6 +15,15 @@ $SelectorScript = Join-Path $PSScriptRoot "select_input_files.ps1"
 $InstallerBatch = Join-Path $BaseDir "一键安装.bat"
 $Workers = 1
 
+function Clear-MenuHost {
+    try {
+        Clear-Host
+    }
+    catch {
+        return
+    }
+}
+
 function Pause-Menu {
     try {
         [void](Read-Host "按 Enter 返回")
@@ -171,7 +180,7 @@ function Invoke-SelectedFiles {
 
 function Show-SelectionMenu {
     while ($true) {
-        Clear-Host
+        Clear-MenuHost
         Write-Host "1. 选择一个或多个 Markdown 文件"
         Write-Host "2. 选择 input 中的子文件夹"
         Write-Host "0. 返回"
@@ -187,7 +196,7 @@ function Show-SelectionMenu {
 
 function Show-RecoveryMenu {
     while ($true) {
-        Clear-Host
+        Clear-MenuHost
         Write-Host "1. 继续上次未完成任务"
         Write-Host "2. 重试上次失败文件"
         Write-Host "0. 返回"
@@ -230,7 +239,7 @@ function Clear-ControlFlags {
 
 function Show-MoreMenu {
     while ($true) {
-        Clear-Host
+        Clear-MenuHost
         Write-Host "1. 预检查，不正式处理"
         Write-Host "2. 测试处理一个文件"
         Write-Host "3. 打开 input 文件夹"
@@ -253,7 +262,7 @@ function Show-MoreMenu {
 }
 
 while ($true) {
-    Clear-Host
+    Clear-MenuHost
     Write-Host "========================================"
     Write-Host "        RAG Markdown 清理工具"
     Write-Host "========================================"

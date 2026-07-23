@@ -62,7 +62,8 @@ def test_installer_uses_only_project_venv_pip() -> None:
 
     assert '$VenvPython = Join-Path $VenvPath "Scripts\\python.exe"' in script
     assert '& $VenvPython -m pip' in script
-    assert "-m pip install -e ." in script
+    assert "-m pip install -e $ProjectRoot" in script
+    assert "-m pip install -e ." not in script
     assert "pip.exe" not in script
     assert "python -m pip" not in script
     assert "--user" not in script
