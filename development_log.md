@@ -243,3 +243,5 @@ v1.6.0 第五阶段新增覆盖：
 - 保留合法 fenced Markdown 及有意义首尾空白；分片边界仅做必要的分隔整理。
 - 回归验证：311 passed、Ruff、`git diff --check`、build、Twine；Windows PowerShell 5.1/CMD CP936 mock 输出探针通过。PowerShell 7 未验证。
 - 本阶段未修改版本号、README、CHANGELOG、Tag 或 GitHub Release；尚未合并到 `develop` 或 `main`。
+
+2026-07-24：`release/v1.7.2` 已从包含完整性修复的 `develop` 准备发布元数据；版本更新为 1.7.2，并新增对应 CHANGELOG 条目。尚未合并到 `main`，尚未创建 Tag、GitHub Release 或上传任何包仓库。
