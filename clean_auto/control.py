@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from .config import GracefulStop
-from .progress import ProgressReporter
+from .progress import ProgressContext, ProgressReporter
 
 
 def wait_if_paused(
@@ -12,13 +12,16 @@ def wait_if_paused(
     stop_file: Path,
     poll_seconds: float = 2.0,
     reporter: ProgressReporter | None = None,
+    context: ProgressContext | None = None,
 ) -> None:
     announced = False
     while pause_file.exists():
         if stop_file.exists():
             raise GracefulStop(f"检测到停止文件：{stop_file}")
         if not announced:
-            if reporter is not None:
+            if reporter is not None and context is not None:
+                reporter.file_event(context, "paused")
+            elif reporter is not None:
                 reporter.notice(f"检测到 {pause_file.name}，删除该文件后继续。")
             else:
                 print(f"\n[暂停] 检测到 {pause_file.name}。删除该文件后继续。")
@@ -26,7 +29,9 @@ def wait_if_paused(
         time.sleep(poll_seconds)
 
     if announced:
-        if reporter is not None:
+        if reporter is not None and context is not None:
+            reporter.file_event(context, "resumed")
+        elif reporter is not None:
             reporter.notice("暂停文件已删除，继续处理。")
         else:
             print("[继续] 暂停文件已删除，继续处理。")
@@ -40,6 +45,7 @@ def controlled_sleep(
     pause_file: Path,
     stop_file: Path,
     reporter: ProgressReporter | None = None,
+    context: ProgressContext | None = None,
 ) -> None:
     if seconds <= 0:
         return
@@ -49,6 +55,7 @@ def controlled_sleep(
             pause_file=pause_file,
             stop_file=stop_file,
             reporter=reporter,
+            context=context,
         )
         remaining = end_time - time.monotonic()
         if remaining <= 0:

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.1] - 2026-07-24
+
+### Fixed
+
+- 修复并发处理时进度可见性和上下文缺失；进度事件现包含文件序号、相对路径和适用的分片上下文。
+- 恢复并统一等待/重试、暂停/恢复、partial/review/质量提示、分片完成/缓存跳过事件，并修正基于 manifest 的批次进度计数。
+
+### Known limitations
+
+- Windows PowerShell 5.1 的重定向输出可能因宿主表现为 CP936 或 UTF-16LE，需要按实际编码读取。
+- 本机未安装 PowerShell 7，本版本尚未进行 PowerShell 7 手工验证。
+
 ## [1.7.0] - 2026-07-23
 
 ### Added

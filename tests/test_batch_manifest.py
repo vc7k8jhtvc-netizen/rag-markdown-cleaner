@@ -134,7 +134,11 @@ def _install_pipeline(
         "plan_has_pending_chunks",
         lambda **_kwargs: True,
     )
-    monkeypatch.setattr(pipeline, "wait_if_paused", lambda *_args: None)
+    monkeypatch.setattr(
+        pipeline,
+        "wait_if_paused",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(pipeline, "acquire_lock", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(pipeline, "release_lock", lambda *_args: None)
     monkeypatch.setattr(pipeline, "ApiClient", FakeApiClient)

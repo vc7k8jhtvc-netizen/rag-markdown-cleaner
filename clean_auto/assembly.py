@@ -28,7 +28,7 @@ from .metadata_schema import (
     add_schema_identity,
 )
 from .quality import assess_quality
-from .progress import ProgressReporter
+from .progress import ProgressContext, ProgressReporter
 from .validation import (
     FRONT_MATTER_PATTERN,
     parse_front_matter_with_error,
@@ -512,6 +512,7 @@ def assemble_completed_file(
     plan: FilePlan,
     config: RuntimeConfig,
     reporter: ProgressReporter | None = None,
+    context: ProgressContext | None = None,
 ) -> tuple[Path, Path]:
     """
     验证分片、合并完整文件、检查质量并安全发布。
@@ -770,21 +771,45 @@ def assemble_completed_file(
             ),
         )
 
-        if review_path is not None:
-            if reporter is not None:
+        if review_path is not None and reporter is not None:
+            if context is not None:
+                reporter.file_event(
+                    context,
+                    "detail",
+                    message=f"人工复核副本已复制到：{review_path}",
+                )
+            else:
                 reporter.notice(f"人工复核副本已复制到：{review_path}")
 
     except Exception as exc:
-        if reporter is not None:
+        if reporter is not None and context is not None:
+            reporter.file_event(
+                context,
+                "detail",
+                message=f"无法同步 review 副本：{exc}",
+            )
+        elif reporter is not None:
             reporter.notice(f"无法同步 review 副本：{exc}")
 
     if quality.review_required:
-        if reporter is not None:
+        if reporter is not None and context is not None:
+            reporter.file_event(
+                context,
+                "quality_warning",
+                message="完整文件需要人工复核",
+            )
+        elif reporter is not None:
             reporter.notice("完整文件存在质量提示，需要人工复核。")
 
-        if quality.warnings:
-            if reporter is not None:
-                reporter.notice("；".join(quality.warnings))
+    if quality.warnings:
+        if reporter is not None and context is not None:
+            reporter.file_event(
+                context,
+                "quality_warning",
+                message="；".join(quality.warnings),
+            )
+        elif reporter is not None:
+            reporter.notice("；".join(quality.warnings))
 
     return (
         final_path,

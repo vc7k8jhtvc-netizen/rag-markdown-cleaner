@@ -15,6 +15,7 @@ from clean_auto.api_client import (
     extract_content,
     parse_retry_after,
 )
+from clean_auto.progress import ProgressContext, ProgressReporter, format_progress_event
 
 
 def disable_model_budget(
@@ -255,6 +256,63 @@ def test_successful_sse_stream(
     assert result.truncated is False
 
 
+def test_request_waiting_event_is_visible_before_mock_response_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    disable_model_budget(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    reporter = ProgressReporter()
+    context = ProgressContext(
+        file_index=1,
+        total_files=2,
+        relative_path=Path("法规/安全生产法.md"),
+        part_number=1,
+        total_parts=16,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(timeout=2)
+        return build_sse_response(request)
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    install_mock_transport(client, handler)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.stream_request,
+            system_prompt="系统提示词",
+            user_message="教材正文",
+            file_index=1,
+            total_files=2,
+            part_number=1,
+            total_parts=16,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            reporter=reporter,
+            context=context,
+        )
+        assert entered.wait(timeout=2)
+        waiting_events = reporter.drain()
+        assert [event.kind for event in waiting_events] == ["chunk_started"]
+        assert format_progress_event(waiting_events[0]) == (
+            "[1/2] 处理中：法规/安全生产法.md"
+            "（分片 1/16，正在请求并等待模型返回）"
+        )
+        assert capsys.readouterr().out == ""
+        release.set()
+        future.result(timeout=2)
+
+    client.close()
+
+
 def test_crlf_chunk_is_preserved_in_api_user_message(
     monkeypatch,
     tmp_path: Path,
@@ -405,6 +463,66 @@ def test_http_429_is_retried(
     assert request_count == 2
     assert result.text == "重试后成功。"
     assert sleep_values == [0.0]
+
+
+def test_http_429_retry_event_keeps_file_and_chunk_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    disable_model_budget(monkeypatch)
+    request_count = 0
+    reporter = ProgressReporter()
+    context = ProgressContext(
+        file_index=2,
+        total_files=3,
+        relative_path=Path("技术 教材.md"),
+        part_number=1,
+        total_parts=45,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                status_code=429,
+                headers={"Retry-After": "0"},
+                content=b'{"error":"rate limit"}',
+                request=request,
+            )
+        return build_sse_response(request, text="重试后成功。")
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    install_mock_transport(client, handler)
+    try:
+        client.stream_request(
+            system_prompt="系统提示词",
+            user_message="教材正文",
+            file_index=2,
+            total_files=3,
+            part_number=1,
+            total_parts=45,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            sleep_fn=lambda *_args: None,
+            reporter=reporter,
+            context=context,
+        )
+    finally:
+        client.close()
+
+    assert capsys.readouterr().out == ""
+    lines = [format_progress_event(event) for event in reporter.drain()]
+    assert lines == [
+        "[2/3] 处理中：技术 教材.md（分片 1/45，正在请求并等待模型返回）",
+        "[2/3] 重试中：技术 教材.md（分片 1/45，第 1/3 次，等待 0 秒）",
+        "[2/3] 处理中：技术 教材.md（分片 1/45，正在请求并等待模型返回）",
+    ]
 
 
 def test_http_401_is_not_retried(

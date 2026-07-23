@@ -34,13 +34,16 @@ class FakeApiClient:
     ) -> None:
         self.client = object()
 
-    def __enter__(self) -> object:
-        return self.client
+    def __enter__(self) -> FakeApiClient:
+        return self
 
     def __exit__(
         self,
         *_args: object,
     ) -> None:
+        return None
+
+    def configure_concurrency(self, _workers: int) -> None:
         return None
 
 
@@ -375,9 +378,104 @@ def test_serial_progress_events_and_final_summary_use_manifest_counts(
 
     output = capsys.readouterr().out
     assert "[1/1] 开始处理：sample.md" in output
-    assert "[1/1] 处理中：sample.md（分片 1/1）" in output
+    assert (
+        "[1/1] 处理中：sample.md（分片 1/1，正在请求并等待模型返回）"
+        in output
+    )
     assert "[1/1] 处理完成：sample.md" in output
     assert "批次完成：总数 1｜成功 1｜跳过 0｜失败 0｜中断 0｜待处理 0" in output
+
+
+def test_concurrent_batch_progress_uses_updated_manifest_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plans = [
+        _make_plan(tmp_path, "first"),
+        _make_plan(tmp_path, "second"),
+        _make_plan(tmp_path, "third"),
+    ]
+    config = _make_config(tmp_path)
+    config.workers = 2
+    _install_pipeline_inputs(monkeypatch, config, plans)
+    observed: list[pipeline.ProgressEvent] = []
+
+    class RecordingConsole:
+        def __init__(self, reporter: object) -> None:
+            self.reporter = reporter
+
+        def write_event(self, event: pipeline.ProgressEvent) -> None:
+            observed.append(event)
+
+        def drain(self) -> None:
+            for event in self.reporter.drain():
+                self.write_event(event)
+
+    def fake_scheduler(
+        selected: list[FilePlan],
+        **kwargs: object,
+    ) -> object:
+        on_started = kwargs["on_started"]
+        on_result = kwargs["on_result"]
+        on_progress = kwargs["on_progress"]
+        on_started(0, selected[0])
+        on_started(1, selected[1])
+        on_result(
+            pipeline.FileResult(
+                index=0,
+                plan=selected[0],
+                status="succeeded",
+                stats=ProcessStats(total_parts=2, success_parts=2),
+            )
+        )
+        on_progress()
+        on_result(
+            pipeline.FileResult(
+                index=1,
+                plan=selected[1],
+                status="interrupted",
+                stats=ProcessStats(total_parts=2),
+                error="检测到停止文件",
+                stop_requested=True,
+            )
+        )
+        on_progress()
+        return SimpleNamespace(
+            stopped=True,
+            submitted=2,
+            completed=2,
+            max_in_flight=2,
+        )
+
+    monkeypatch.setattr(pipeline, "ProgressConsole", RecordingConsole)
+    monkeypatch.setattr(pipeline, "run_file_scheduler", fake_scheduler)
+    monkeypatch.setattr(pipeline, "ApiClient", FakeApiClient)
+    monkeypatch.setattr(pipeline, "acquire_lock", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pipeline, "release_lock", lambda *_args, **_kwargs: None)
+
+    assert _exit_code(lambda: pipeline.main([])) == 1
+
+    batch_events = [event for event in observed if event.kind == "batch_progress"]
+    assert [event.counts for event in batch_events] == [
+        {
+            "total": 3,
+            "succeeded": 1,
+            "skipped": 0,
+            "failed": 0,
+            "interrupted": 0,
+            "running": 1,
+            "pending": 1,
+        },
+        {
+            "total": 3,
+            "succeeded": 1,
+            "skipped": 0,
+            "failed": 0,
+            "interrupted": 1,
+            "running": 0,
+            "pending": 1,
+        },
+    ]
 
 
 def test_lock_is_released_when_api_client_enter_fails(
@@ -591,12 +689,12 @@ def test_workers_one_preserves_order_and_file_pause_behavior(
     monkeypatch.setattr(
         pipeline,
         "wait_for_enter_or_stop",
-        lambda *_args: events.append("pause-after"),
+        lambda *_args, **_kwargs: events.append("pause-after"),
     )
     monkeypatch.setattr(
         pipeline,
         "controlled_sleep",
-        lambda seconds, *_args: events.append(f"sleep:{seconds}"),
+        lambda seconds, *_args, **_kwargs: events.append(f"sleep:{seconds}"),
     )
 
     assert _exit_code(lambda: pipeline.main([])) == 0
