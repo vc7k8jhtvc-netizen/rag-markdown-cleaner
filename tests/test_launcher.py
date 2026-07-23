@@ -278,7 +278,7 @@ def test_powershell_menu_has_chinese_layout_and_safe_environment_gate() -> None:
 
     assert '$VenvPython = Join-Path $BaseDir ".venv\\Scripts\\python.exe"' in script
     assert "Test-ProjectPython" in script
-    assert "未来的 一键安装.bat" in script
+    assert "请运行一键安装.bat" in script
     assert "Get-Command python.exe" not in script
     assert "Get-Command py.exe" not in script
     assert "OPENAI_API_KEY" not in script
@@ -303,6 +303,8 @@ def test_powershell_menu_preserves_cli_and_selection_contracts() -> None:
     assert "Test-MenuChoice" in script
     assert "Read-MenuChoice" in script
     assert "function Open-BatchLog" in script
+    assert "function Invoke-Installer" in script
+    assert "一键安装.bat" in script
 
 
 def test_powershell_selector_has_stable_safe_contract() -> None:
@@ -368,6 +370,7 @@ def test_windows_menu_dispatches_exact_choice_values_to_isolated_actions() -> No
     assert '"4" { Invoke-Cleaner -Arguments @("--batch-status") }' in script
     assert '"5" { Set-MenuWorkers }' in script
     assert '"6" { Open-MenuDirectory -Path (Join-Path $BaseDir "output") }' in script
+    assert '"7" { Invoke-Installer }' in script
     assert '"8" { Show-MoreMenu }' in script
     assert "[int]$choice" in script
     assert "@(\"1\", \"2\", \"3\", \"4\", \"5\")" in script
@@ -378,7 +381,6 @@ def test_windows_menu_blocks_actions_when_python_preflight_fails() -> None:
 
     assert "if (-not (Test-ProjectPython))" in script
     assert "Show-EnvironmentRequired" in script
-    assert "exit 1" in script
     assert "不会使用系统 Python，也不会启动处理任务。" in script
     assert "Get-Command python.exe" not in script
     assert "Get-Command py.exe" not in script
@@ -391,6 +393,11 @@ def test_powershell_menu_safely_handles_missing_venv_in_available_hosts(
     menu_path = ROOT / "scripts" / "menu.ps1"
     hosts = [host for host in ("powershell.exe", "pwsh.exe") if shutil.which(host)]
     assert hosts
+
+    script = menu_path.read_text(encoding="utf-8-sig")
+    assert "function Clear-MenuHost" in script
+    assert script.count("Clear-Host") == 1
+    assert script.count("Clear-MenuHost") == 5
 
     for host in hosts:
         missing_venv_result = subprocess.run(
@@ -412,6 +419,6 @@ def test_powershell_menu_safely_handles_missing_venv_in_available_hosts(
             check=False,
             timeout=15,
         )
-        assert missing_venv_result.returncode == 1, host
-        assert "未检测到可用的项目运行环境" in missing_venv_result.stdout
+        assert missing_venv_result.returncode == 0, host
+        assert "当前缺少可用 .venv，请选择 7 安装或修复运行环境" in missing_venv_result.stdout
         assert "正在启动处理命令" not in missing_venv_result.stdout
