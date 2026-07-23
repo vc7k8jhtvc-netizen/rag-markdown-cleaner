@@ -28,6 +28,7 @@ from .metadata_schema import (
     add_schema_identity,
 )
 from .quality import assess_quality
+from .progress import ProgressReporter
 from .validation import (
     FRONT_MATTER_PATTERN,
     parse_front_matter_with_error,
@@ -510,6 +511,7 @@ def sync_review_copy(
 def assemble_completed_file(
     plan: FilePlan,
     config: RuntimeConfig,
+    reporter: ProgressReporter | None = None,
 ) -> tuple[Path, Path]:
     """
     验证分片、合并完整文件、检查质量并安全发布。
@@ -769,39 +771,20 @@ def assemble_completed_file(
         )
 
         if review_path is not None:
-            print(
-                "[人工复核] 已复制到："
-                f"{review_path}"
-            )
+            if reporter is not None:
+                reporter.notice(f"人工复核副本已复制到：{review_path}")
 
     except Exception as exc:
-        print(
-            "[复核目录警告] "
-            "无法同步 review 副本："
-            f"{exc}"
-        )
-
-    print(
-        "[完整文件质量] "
-        "保留比例："
-        f"{quality.retained_ratio:.1%}；"
-        "删除比例："
-        f"{quality.removed_ratio:.1%}"
-    )
+        if reporter is not None:
+            reporter.notice(f"无法同步 review 副本：{exc}")
 
     if quality.review_required:
-        print(
-            "[完整文件需要复核] "
-            "合并结果存在质量提示。"
-        )
+        if reporter is not None:
+            reporter.notice("完整文件存在质量提示，需要人工复核。")
 
         if quality.warnings:
-            print(
-                "[完整文件提示] "
-                + "；".join(
-                    quality.warnings
-                )
-            )
+            if reporter is not None:
+                reporter.notice("；".join(quality.warnings))
 
     return (
         final_path,

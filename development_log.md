@@ -2,7 +2,45 @@
 
 ## Current State
 
-Current branch: `release/v1.6.1`
+Current branch: `release/v1.7.0`
+
+## v1.7.0 Release Preparation (2026-07-23)
+
+- [x] v1.7.0 三个开发阶段已合入 develop：文件级并发中文进度事件、中文 PowerShell 菜单、Windows 一键安装/修复项目内 `.venv`。
+- [x] 已在 release/v1.7.0 统一更新项目版本来源、版本测试、README 当前版本和 CHANGELOG v1.7.0 条目。
+- [x] 已记录 Source archive、Windows PowerShell 5.1 和完整质量门禁的发布候选验证范围；尚未创建 v1.7.0 tag 或 GitHub Release。
+
+## v1.7.0 Phase 3: Windows Environment Installer (2026-07-23)
+
+- [x] 新增 ASCII、无 BOM、CRLF 的 `一键安装.bat`，只负责定位项目根目录和启动 PowerShell 安装脚本。
+- [x] 新增 UTF-8 with BOM、CRLF 的 `scripts/install_environment.ps1`，优先检测 `py -3`，再检测 `python.exe`，只接受 Python 3.10+。
+- [x] 安装器只使用项目内 `.venv` 和 `.venv\\Scripts\\python.exe -m pip`；健康环境不删除，损坏环境必须明确确认后才重建。
+- [x] 菜单第 7 项已调用项目根目录的一键安装器；缺少 `.venv` 时保留安全提示和安装入口，不回退系统 Python。
+- [x] 已补充 Source ZIP 与 wheel 的安装说明、编码契约测试和无真实 venv/网络的自动化契约测试。
+
+## v1.7.0 Phase 2: Chinese PowerShell Menu (2026-07-23)
+
+- [x] `一键菜单.bat` 已收缩为 ASCII、无 BOM、CRLF 的 PowerShell 启动器；不再承载菜单或回退到系统 Python。
+- [x] 新增 UTF-8 with BOM、CRLF 的 `scripts/menu.ps1`，提供中文主菜单、选择与恢复子菜单、会话 workers 设置和低频功能入口。
+- [x] 菜单只使用项目 `.venv\\Scripts\\python.exe`；缺失或无法导入项目时安全退出，不启动处理任务。
+- [x] 复用现有 CLI 参数和 `scripts/select_input_files.ps1` 的 selection JSON 契约；未修改 pipeline、manifest、cache 或 API 语义。
+- [x] Windows PowerShell 5.1 已验证中文菜单、空输入、EOF、缺失 `.venv` 安全提示和 dry-run（不发送 API 请求）。
+- [ ] 当前验证主机未安装 PowerShell 7，尚未完成 PowerShell 7 手工冒烟。
+
+## v1.7.0 Phase 1: File Progress Events (2026-07-23)
+
+- [x] 新增内部 `ProgressEvent`、线程安全事件队列和主线程中文行式输出。
+- [x] 并发 worker 不再直接写 stdout；分片开始、完成、缓存跳过、失败和中断均通过事件报告。
+- [x] 删除 SSE `\r` 单行刷新，最终批次汇总直接使用 finalize 后的 manifest counts。
+- [x] 已验证进度事件、scheduler、pipeline、processor、API、assembly 以及完整 pytest 和 Ruff 检查。
+
+## v1.6.1 Release (2026-07-23)
+
+- [x] v1.6.1 于 2026-07-23 正式发布；标签：`v1.6.1`。
+- main 发布提交：`18785143656d7b27d8ed96df8365661d2f4ebce6`。
+- GitHub Release 已创建并设为 latest；未上传 PyPI。
+- GitHub Source ZIP 的 Windows launcher CRLF 热修复已发布。
+- 下一阶段：中文菜单、一键安装环境、菜单精简。
 
 Phase 1:
 

@@ -1,0 +1,3 @@
+未检测到 PowerShell，无法安全启动中文菜单。
+请安装 Windows PowerShell 或 PowerShell 7 后，再次运行一键菜单。
+不会启动任何处理任务。

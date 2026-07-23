@@ -92,6 +92,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
+### Windows Source ZIP 一键安装
+
+从 GitHub 下载 Source ZIP 并解压后，在项目根目录双击 `一键安装.bat`。安装器会优先检测 `py -3`，再检测 `python.exe`，只接受 Python 3.10 或更高版本；它只会在项目根目录创建或检查 `.venv`，并使用 `.venv\Scripts\python.exe -m pip` 安装项目依赖。
+
+安装器不会修改系统 PATH、注册表或全局 Python，也不会保存 API Key。已有健康 `.venv` 不会被删除；损坏或不兼容的 `.venv` 只有在明确输入 `Y` 后才会重建。安装成功后双击 `一键菜单.bat`。
+
+如果使用 wheel，则不包含 Windows 菜单和安装脚本；请按本节上方的 Python 安装方式配置环境后使用 `rag-cleaner` CLI。
+
 开发环境安装测试和 Ruff：
 
 ```powershell
@@ -274,8 +282,8 @@ python -m clean_auto --batch-status
 
 Windows 的 `一键菜单.bat` 支持处理全部文件、选择 `input/` 内的 Markdown 文件或子目录、
 设置 workers、继续、重试和查看状态。选择器范围仅限 `input/` 及其子目录，Python 层会继续执行
-最终路径安全校验。一键菜单和 PowerShell 选择脚本属于源码仓库/Source archive 工具，不包含在
-wheel 中；wheel 用户使用上述 Python CLI。
+最终路径安全校验。一键菜单、安装器和 PowerShell 选择脚本属于源码仓库/Source archive 工具，
+不包含在 wheel 中；wheel 用户使用上述 Python CLI。
 
 推荐流程：
 
@@ -430,8 +438,10 @@ Python 3.14
 当前版本：
 
 ```text
-当前正式版本：1.6.1
+当前正式版本：1.7.0
 ```
+
+v1.7.0 提供文件级并发中文进度事件、简洁中文 Windows PowerShell 菜单，以及项目内 `.venv` 一键安装/修复流程。Windows 用户从 GitHub Source ZIP 解压后，先运行 `一键安装.bat`，再运行 `一键菜单.bat`；菜单不会静默回退到系统 Python。
 
 v1.6.1 修复 GitHub Source ZIP 中 Windows 批处理文件因 LF 行尾导致的一键菜单解析异常。
 
