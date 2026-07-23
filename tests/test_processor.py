@@ -143,6 +143,7 @@ def _write_completed_chunk(
         base_url=config.base_url,
         part_number=part_number,
         total_parts=len(plan.chunks),
+        strict_validation=config.strict_validation,
     )
     metadata = build_output_metadata(
         expected=expected,
@@ -203,6 +204,24 @@ def test_save_chunk_result_removes_both_files_on_write_failure(
 
     assert not output_path.exists()
     assert not metadata_path.exists()
+
+
+def test_save_chunk_result_preserves_meaningful_outer_whitespace(
+    tmp_path: Path,
+) -> None:
+    """Chunk persistence must not normalize a valid fenced Markdown result."""
+    output_path = tmp_path / "part.md"
+    metadata_path = tmp_path / "part.md.meta.json"
+    result = "\n```markdown\nbody\n```\n\n"
+
+    processor.save_chunk_result(
+        output_path,
+        metadata_path,
+        result,
+        {"status": "completed"},
+    )
+
+    assert output_path.read_text(encoding="utf-8") == result
 
 
 def test_successful_file_processing_commits_chunks_then_assembles(
@@ -272,11 +291,13 @@ def test_successful_file_processing_commits_chunks_then_assembles(
         plan.source_path,
         1,
     )
-    assert first_output.read_text(encoding="utf-8") == "Clean one\n"
+    assert first_output.read_text(encoding="utf-8") == "```markdown\nClean one\n```"
     metadata = json.loads(first_metadata.read_text(encoding="utf-8"))
     assert metadata["status"] == "completed"
     assert metadata["schema"] == "rag-cleaner/chunk-metadata"
-    assert metadata["output_sha256"] == sha256_text("Clean one")
+    assert metadata["output_sha256"] == sha256_text(
+        "```markdown\nClean one\n```"
+    )
 
 
 def test_completed_chunks_skip_api_but_still_trigger_assembly(
@@ -454,3 +475,75 @@ def test_chunk_request_and_quality_messages_are_contextual_worker_events(
     assert lines[2] == f"[2/3] 质量提示：sample.md（分片 1/1，{warning}）"
     assert lines[3] == "[2/3] 分片完成：sample.md（分片 1/1）"
     assert all(not line.startswith("[提示]") for line in lines)
+
+
+def test_failed_chunk_emits_contextual_sanitized_event_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    plan = _make_plan(tmp_path, ["source-1", "source-2"])
+    config = _make_config(tmp_path)
+    client = FakeClient(
+        [
+            RuntimeError(
+                "Authorization: Bearer secret-token\n"
+                f"failed at {tmp_path / 'private' / 'response.json'}"
+            ),
+            "cleaned-2",
+        ]
+    )
+    reporter = ProgressReporter()
+    _patch_successful_checks(monkeypatch)
+    monkeypatch.setattr(processor, "assemble_completed_file", lambda **_kwargs: None)
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+        reporter=reporter,
+    )
+
+    events = reporter.drain()
+    failed = [event for event in events if event.kind == "chunk_failed"]
+    assert len(failed) == 1
+    assert failed[0].part_number == 1
+    assert failed[0].total_parts == 2
+    assert failed[0].relative_path == Path("sample.md")
+    assert "secret-token" not in (failed[0].error or "")
+    assert str(tmp_path) not in (failed[0].error or "")
+    assert "\n" not in (failed[0].error or "")
+    assert any(event.kind == "chunk_completed" and event.part_number == 2 for event in events)
+    assert outcome.stats.failed_parts == 1
+    assert outcome.stats.success_parts == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_strict_mode_does_not_reuse_lenient_chunk_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    lenient_config = _make_config(tmp_path)
+    _write_completed_chunk(plan, lenient_config, 1, "cached result")
+    strict_config = _make_config(tmp_path)
+    strict_config.strict_validation = True
+    client = FakeClient(["strict result"])
+    _patch_successful_checks(monkeypatch)
+    monkeypatch.setattr(processor, "assemble_completed_file", lambda **_kwargs: None)
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=strict_config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    assert len(client.calls) == 1
+    assert outcome.stats.skipped_parts == 0
+    assert outcome.stats.success_parts == 1

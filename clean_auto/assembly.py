@@ -59,6 +59,13 @@ def build_final_paths(
     return final_path, metadata_path
 
 
+def _progress_path(path: Path, base_dir: Path) -> str:
+    try:
+        return path.resolve().relative_to(base_dir.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.name
+
+
 def _remove_front_matter(
     text: str,
 ) -> str:
@@ -584,6 +591,7 @@ def assemble_completed_file(
             base_url=config.base_url,
             part_number=part_number,
             total_parts=total_parts,
+            strict_validation=config.strict_validation,
         )
 
         if not is_completed_chunk(
@@ -597,11 +605,9 @@ def assemble_completed_file(
                 "个分片尚未完成"
             )
 
-        part_text = read_text(
-            output_path
-        ).strip()
+        part_text = read_text(output_path)
 
-        if not part_text:
+        if not part_text.strip():
             raise RuntimeError(
                 "分片内容为空："
                 f"{output_path}"
@@ -629,17 +635,18 @@ def assemble_completed_file(
     # 生成候选完整文件
     # --------------------------------------------------------
 
-    final_text = "\n\n".join(
-        part_texts
-    ).strip()
+    final_text = part_texts[0]
+    for part_text in part_texts[1:]:
+        # Only normalize the boundary between independently generated chunks.
+        # The document's leading whitespace and final trailing whitespace remain
+        # exactly as returned by the model.
+        final_text = final_text.rstrip() + "\n\n" + part_text.lstrip()
 
     if not final_text:
         raise RuntimeError(
             "合并结果为空："
             f"{plan.relative_path}"
         )
-
-    final_text += "\n"
 
     # --------------------------------------------------------
     # 完整文件质量检查
@@ -709,6 +716,8 @@ def assemble_completed_file(
             config.base_url.rstrip("/")
         ),
         "part_count": total_parts,
+        "strict_validation": config.strict_validation,
+        "normalization_policy": "preserve-outer-fence-v1",
         "output_sha256": sha256_text(
             final_text
         ),
@@ -772,24 +781,25 @@ def assemble_completed_file(
         )
 
         if review_path is not None and reporter is not None:
+            display_path = _progress_path(review_path, config.base_dir)
             if context is not None:
                 reporter.file_event(
                     context,
                     "detail",
-                    message=f"人工复核副本已复制到：{review_path}",
+                    message=f"人工复核副本已复制到：{display_path}",
                 )
             else:
-                reporter.notice(f"人工复核副本已复制到：{review_path}")
+                reporter.notice(f"人工复核副本已复制到：{display_path}")
 
-    except Exception as exc:
+    except Exception:
         if reporter is not None and context is not None:
             reporter.file_event(
                 context,
                 "detail",
-                message=f"无法同步 review 副本：{exc}",
+                message="无法同步 review 副本",
             )
         elif reporter is not None:
-            reporter.notice(f"无法同步 review 副本：{exc}")
+            reporter.notice("无法同步 review 副本")
 
     if quality.review_required:
         if reporter is not None and context is not None:

@@ -589,6 +589,38 @@ def test_http_401_is_not_retried(
     assert request_count == 1
 
 
+def test_partial_progress_uses_filename_without_absolute_path(
+    tmp_path: Path,
+) -> None:
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    reporter = ProgressReporter()
+    context = ProgressContext(
+        file_index=1,
+        total_files=1,
+        relative_path=Path("input/sample.md"),
+    )
+    error = RuntimeError("request failed")
+    error.partial_text = "partial output"  # type: ignore[attr-defined]
+    partial_path = tmp_path / "partial" / "sample.partial.md"
+    try:
+        client._save_partial_if_available(
+            error,
+            partial_path,
+            reporter,
+            context,
+        )
+    finally:
+        client.close()
+
+    line = format_progress_event(reporter.drain()[0])
+    assert "sample.partial.md" in line
+    assert str(tmp_path) not in line
+
+
 def test_configured_request_concurrency_never_exceeds_workers(
     monkeypatch,
     tmp_path: Path,

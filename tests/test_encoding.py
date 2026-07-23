@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import clean_auto.chunking as chunking
 from clean_auto.chunking import (
     build_expected_metadata,
     build_file_plan,
@@ -193,6 +194,35 @@ def test_build_file_plan_preserves_crlf_and_hashes_raw_bytes(
     )
 
     assert lf_plan.source_sha256 != plan.source_sha256
+
+
+def test_build_file_plan_rejects_equal_length_source_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_dir = tmp_path / "input"
+    source_path = input_dir / "race.md"
+    input_dir.mkdir()
+    source_path.write_bytes(b"AAAA\n")
+    real_create_chunks = chunking.create_chunks
+
+    def replace_after_chunking(text: str, max_chars: int) -> list[str]:
+        chunks = real_create_chunks(text, max_chars)
+        replacement = source_path.with_suffix(".replacement")
+        replacement.write_bytes(b"BBBB\n")
+        replacement.replace(source_path)
+        return chunks
+
+    monkeypatch.setattr(chunking, "create_chunks", replace_after_chunking)
+
+    with pytest.raises(RuntimeError, match="文件发生变化"):
+        build_file_plan(
+            source_path=source_path,
+            input_dir=input_dir,
+            output_dir=tmp_path / "output",
+            max_chars=100,
+            max_file_size=100_000,
+        )
 
 
 def test_structured_crlf_markdown_plan_is_lossless(

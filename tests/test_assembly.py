@@ -120,6 +120,7 @@ def _write_completed_parts(
             base_url=config.base_url,
             part_number=part_number,
             total_parts=len(plan.chunks),
+            strict_validation=config.strict_validation,
         )
         metadata = build_output_metadata(
             expected=expected,
@@ -127,7 +128,7 @@ def _write_completed_parts(
             warnings=[],
         )
         metadata["status"] = "completed"
-        atomic_write_text(output_path, result + "\n")
+        atomic_write_text(output_path, result)
         metadata_path.write_text(
             json.dumps(metadata),
             encoding="utf-8",
@@ -206,7 +207,7 @@ def test_completed_parts_are_assembled_in_order(
 
     expected_text = (
         f"{FRONT_MATTER}\n\nFirst body\n\n"
-        "Second body\n\nThird body\n"
+            "Second body\n\nThird body"
     )
     assert final_path.read_text(encoding="utf-8") == expected_text
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -556,3 +557,31 @@ def test_complete_file_warning_does_not_require_review_flag(
 
     lines = [format_progress_event(event) for event in reporter.drain()]
     assert lines == [f"[1/1] 质量提示：sample.md（{warning}）"]
+
+
+def test_review_progress_uses_project_relative_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    monkeypatch.setattr(assembly, "assess_quality", lambda **_kwargs: _quality_report())
+    review_path = (tmp_path / "review" / "sample_cleaned.md").resolve()
+    monkeypatch.setattr(assembly, "sync_review_copy", lambda **_kwargs: review_path)
+    reporter = ProgressReporter()
+
+    assembly.assemble_completed_file(
+        plan=plan,
+        config=config,
+        reporter=reporter,
+        context=ProgressContext(
+            file_index=1,
+            total_files=1,
+            relative_path=plan.relative_path,
+        ),
+    )
+
+    line = format_progress_event(reporter.drain()[0])
+    assert "review/sample_cleaned.md" in line
+    assert str(tmp_path) not in line

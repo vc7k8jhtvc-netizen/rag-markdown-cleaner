@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,26 @@ def safe_log_path(
         return path.name
 
 
+def _safe_progress_error(
+    exc: Exception,
+    config: RuntimeConfig,
+) -> str:
+    text = compact_error(exc, limit=240)
+    try:
+        text = text.replace(
+            str(config.base_dir.resolve()),
+            "<项目目录>",
+        )
+    except OSError:
+        pass
+    text = re.sub(
+        r"(?i)[A-Z]:[\\/][^\s;，。；]+",
+        "<路径>",
+        text,
+    )
+    return text
+
+
 def remove_incomplete_output(
     output_path: Path,
     metadata_path: Path,
@@ -121,7 +142,7 @@ def save_chunk_result(
     try:
         atomic_write_text(
             output_path,
-            result.rstrip() + "\n",
+            result,
         )
 
         atomic_write_json(
@@ -225,6 +246,7 @@ def process_file(
             base_url=config.base_url,
             part_number=part_number,
             total_parts=total_parts,
+            strict_validation=config.strict_validation,
         )
 
         # ----------------------------------------------------
@@ -362,6 +384,7 @@ def process_file(
             )
 
             metadata["status"] = "completed"
+            metadata["strict_validation"] = config.strict_validation
             metadata["review_required"] = (
                 quality.review_required
             )
@@ -468,6 +491,13 @@ def process_file(
 
             stats.failed_parts += 1
             consecutive_failures += 1
+
+            if reporter is not None:
+                reporter.file_event(
+                    progress_context,
+                    "chunk_failed",
+                    error=_safe_progress_error(exc, config),
+                )
 
             partial_log_path = (
                 safe_log_path(

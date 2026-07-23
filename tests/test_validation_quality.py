@@ -1,7 +1,22 @@
 from __future__ import annotations
 
+import pytest
+
 from clean_auto.quality import assess_quality
-from clean_auto.validation import validate_result
+from clean_auto.validation import remove_outer_code_fence, validate_result
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```text\nverbatim text\n```",
+        "```markdown\n# Heading\n```",
+        "```\nplain fenced content\n```",
+        "\n```text\n  meaningful spacing  \n```\n",
+    ],
+)
+def test_outer_code_fence_is_preserved_losslessly(text: str) -> None:
+    assert remove_outer_code_fence(text) == text
 
 
 def valid_first_part() -> str:
