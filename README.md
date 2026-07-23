@@ -438,8 +438,10 @@ Python 3.14
 当前版本：
 
 ```text
-当前正式版本：1.6.1
+当前正式版本：1.7.0
 ```
+
+v1.7.0 提供文件级并发中文进度事件、简洁中文 Windows PowerShell 菜单，以及项目内 `.venv` 一键安装/修复流程。Windows 用户从 GitHub Source ZIP 解压后，先运行 `一键安装.bat`，再运行 `一键菜单.bat`；菜单不会静默回退到系统 Python。
 
 v1.6.1 修复 GitHub Source ZIP 中 Windows 批处理文件因 LF 行尾导致的一键菜单解析异常。
 

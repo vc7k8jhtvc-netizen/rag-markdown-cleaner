@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.7.0] - 2026-07-23
+
+### Added
+
+- workers > 1 时由 scheduler 主线程统一输出完整中文文件级进度事件，覆盖开始、分片进度、缓存跳过、成功、失败和中断，消除 stdout/SSE 覆盖与交错。
+- 新增简洁中文 PowerShell 菜单，`一键菜单.bat` 改为最小启动器；保留处理、选择、恢复、重试、状态和更多功能入口。
+- 新增 `一键安装.bat` 与项目内 `.venv` 安装/修复流程，支持 Python 3.10+ 检测、健康检查和明确确认后的损坏环境重建。
+
+### Changed
+
+- Windows 环境配置仅使用项目 `.venv`，不静默回退系统 Python，不修改 PATH、注册表或全局 Python。
+- Windows `.bat/.cmd` 启动器和 PowerShell 脚本建立 ASCII/无 BOM/CRLF 与 UTF-8 BOM/CRLF 编码契约，兼容 Source ZIP 和 Windows PowerShell 5.1。
+
+### Compatibility / Release
+
+- 不改变 manifest、metadata、JSONL、cache、chunking、stop/resume/retry 或 API 请求语义。
+- 发布物仍为 GitHub tag、GitHub Release 和 Source code archives；本项目不上传 PyPI。
+- 本阶段本机未安装 PowerShell 7，PowerShell 7 的验证依赖 GitHub Actions Windows runner。
+
 ## [1.6.1] - 2026-07-23
 
 ### Fixed

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-cleaner"
-version = "1.6.1"
+version = "1.7.0"
 description = "面向中级注册安全工程师 AI 学习知识库的 Markdown 批量清洗工具"
 readme = "README.md"
 requires-python = ">=3.10"
