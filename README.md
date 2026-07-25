@@ -265,10 +265,14 @@ input/
 
 处理过程中，窗口会持续显示当前文件和分片；模型开始返回内容后，每个正在运行的任务会固定占用一行，并在自己的行内刷新“已接收多少 B/KB”，不会互相覆盖或反复刷屏。每个文件完成、跳过或失败时会显示总体完成百分比。只要接收数字仍在增加，任务就仍在正常运行。
 
-### v1.6.0：批量处理与恢复
+### 批量处理、并发与恢复
 
+- 默认每个分片最多 `12000` 个字符，可以使用 `--max-chars` 调整。这里按字符数分片，
+  不是按文件字节数或模型返回字节数分片。
 - `--workers` 取值为 1-5，默认 1；`workers=1` 保持串行处理。设置大于 1 时，
   文件和文件内分片共享同一个并发上限；例如 `--workers 5` 最多同时执行 5 个清洗任务。
+- `workers` 大于 1 时不能同时使用 dry-run、`--pause-after-files` 或
+  `--pause-between-files`；需要这些串行控制功能时请使用 `workers=1`。
 - 使用 `--selection-file PATH` 按 UTF-8 JSON 清单选择文件；清单路径必须是相对
   `input/` 的 POSIX 路径。
 - 使用 `--resume-batch [BATCH_ID]` 继续 `pending`/`interrupted` 文件，或使用
@@ -287,6 +291,9 @@ Windows 的 `一键菜单.bat` 支持处理全部文件、选择 `input/` 内的
 设置 workers、继续、重试和查看状态。选择器范围仅限 `input/` 及其子目录，Python 层会继续执行
 最终路径安全校验。一键菜单、安装器和 PowerShell 选择脚本属于源码仓库/Source archive 工具，
 不包含在 wheel 中；wheel 用户使用上述 Python CLI。
+
+从一键菜单选择开始处理时，如果最近一次批次仍有等待、运行中或被中断的文件，菜单会优先
+自动继续该批次；如果没有可继续的批次，才会开始新的全量扫描。
 
 推荐流程：
 
@@ -414,6 +421,9 @@ New-Item .\stop.flag -ItemType File -Force
 
 如果完整文件丢失，但分片仍然有效，程序会跳过已完成分片，只重新合并完整文件。
 
+断点续跑以“已经验证完成的分片”为单位。`*.partial.md` 只用于保存和检查中断时收到的部分
+响应，不会从某个分片已经接收的字节位置继续传输；该分片下次运行时会重新请求。
+
 ## 测试和代码检查
 
 运行测试：
@@ -428,13 +438,11 @@ New-Item .\stop.flag -ItemType File -Force
 .\.venv\Scripts\python.exe -m ruff check clean_auto tests
 ```
 
-GitHub Actions 配置会在 Windows 和 Linux 上验证：
+GitHub Actions 当前验证范围：
 
-```text
-Python 3.10
-Python 3.12
-Python 3.14
-```
+- Windows：Python 3.10、3.12、3.14；
+- Linux：Python 3.10、3.12；
+- Linux Python 3.12 还会构建 wheel 和 source distribution，并检查发布包 metadata。
 
 ## 版本
 
@@ -444,18 +452,13 @@ Python 3.14
 当前正式版本：1.8.0
 ```
 
-v1.8.0 增加文件内分片并发：文件和分片共享同一个 workers 上限；实时进度会为每个运行任务保留独立行，显示已接收 B/KB 和总体完成百分比。中断后继续运行时仍会复用已经验证完成的分片，并按分片编号组装最终文件。
+v1.8.0 增加文件内分片并发：文件和分片共享同一个 workers 上限；实时进度会为每个运行任务保留独立行，显示已接收 B/KB 和总体完成百分比。Windows 一键菜单会优先自动继续最近一次尚未完成的批次。中断后继续运行时仍会复用已经验证完成的分片，并按分片编号组装最终文件。
 
 v1.7.0 提供并发中文进度事件、简洁中文 Windows PowerShell 菜单，以及项目内 `.venv` 一键安装/修复流程。Windows 用户从 GitHub Source ZIP 解压后，先运行 `一键安装.bat`，再运行 `一键菜单.bat`；菜单不会静默回退到系统 Python。
 
 v1.6.1 修复 GitHub Source ZIP 中 Windows 批处理文件因 LF 行尾导致的一键菜单解析异常。
 
-版本发布：
-
-- `v1.2.0`：初始公开版本；
-- `v1.3.0`：可靠性、质量检查和测试增强；
-- `v1.4.0`：上下文预算、复核目录、metadata schema 和 CI；
-- `v1.4.1`：使用说明和文档结构修复。
+完整版本记录请查看 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 安全、版权和费用
 
