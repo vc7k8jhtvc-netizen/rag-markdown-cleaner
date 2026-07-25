@@ -233,6 +233,7 @@ def test_successful_file_processing_commits_chunks_then_assembles(
     """Cover the successful API-to-metadata flow and assembly gate."""
     plan = _make_plan(tmp_path, ["source-1", "source-2"])
     config = _make_config(tmp_path)
+    config.quality_policy_sha256 = "quality-policy-v1"
     plan.output_dir.mkdir(parents=True, exist_ok=True)
     partial_paths: list[Path] = []
 
@@ -297,6 +298,9 @@ def test_successful_file_processing_commits_chunks_then_assembles(
     metadata = json.loads(first_metadata.read_text(encoding="utf-8"))
     assert metadata["status"] == "completed"
     assert metadata["schema"] == "rag-cleaner/chunk-metadata"
+    assert metadata["quality_policy_sha256"] == (
+        "quality-policy-v1"
+    )
     assert metadata["output_sha256"] == sha256_text(
         "```markdown\nClean one\n```"
     )
@@ -310,6 +314,7 @@ def test_completed_chunks_skip_api_but_still_trigger_assembly(
     plan = _make_plan(tmp_path, ["source"])
     config = _make_config(tmp_path)
     _write_completed_chunk(plan, config, 1, "Clean result")
+    config.quality_policy_sha256 = "new-quality-policy"
     client = FakeClient([AssertionError("API must not be called")])
     assembly_calls: list[FilePlan] = []
     reporter = ProgressReporter()

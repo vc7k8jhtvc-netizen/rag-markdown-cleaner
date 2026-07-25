@@ -16,6 +16,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
+from .quality_settings import build_quality_policy_sha256
+
 try:
     import yaml  # type: ignore
 except ImportError:  # pragma: no cover
@@ -192,6 +194,7 @@ class RuntimeConfig:
     max_files: int = 0
     dry_run: bool = False
     workers: int = 1
+    quality_policy_sha256: str = ""
 
 
 class GracefulStop(Exception):
@@ -968,6 +971,10 @@ def load_runtime_config(
         override=True,
     )
 
+    quality_policy_sha256 = (
+        build_quality_policy_sha256()
+    )
+
     api_key = os.getenv(
         "OPENAI_API_KEY",
         "",
@@ -1078,4 +1085,7 @@ def load_runtime_config(
         max_files=args.max_files,
         dry_run=bool(args.dry_run),
         workers=getattr(args, "workers", 1),
+        quality_policy_sha256=(
+            quality_policy_sha256
+        ),
     )

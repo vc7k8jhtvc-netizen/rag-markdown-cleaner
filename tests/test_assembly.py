@@ -453,6 +453,106 @@ def test_publish_failure_removes_new_files_when_no_previous_version_exists(
     assert not metadata_path.exists()
 
 
+def test_legacy_chunk_metadata_is_revalidated_and_upgraded(
+    tmp_path: Path,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    config.quality_policy_sha256 = "quality-policy-v2"
+
+    final_path, final_metadata_path = (
+        assembly.assemble_completed_file(
+            plan=plan,
+            config=config,
+        )
+    )
+
+    _, chunk_metadata_path, _ = get_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    chunk_metadata = json.loads(
+        chunk_metadata_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    final_metadata = json.loads(
+        final_metadata_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert final_path.is_file()
+    assert chunk_metadata["quality_policy_sha256"] == (
+        "quality-policy-v2"
+    )
+    assert final_metadata["quality_policy_sha256"] == (
+        "quality-policy-v2"
+    )
+
+
+def test_review_sync_failure_is_not_treated_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    warning = "需要人工复核"
+    monkeypatch.setattr(
+        assembly,
+        "assess_quality",
+        lambda **_kwargs: SimpleNamespace(
+            severe_errors=[],
+            review_required=True,
+            warnings=[warning],
+            to_dict=lambda: {
+                "severe_errors": [],
+                "warnings": [warning],
+                "review_required": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        assembly,
+        "sync_review_copy",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            OSError("review write failed")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="完整文件未视为成功",
+    ):
+        assembly.assemble_completed_file(
+            plan=plan,
+            config=config,
+        )
+
+    final_path, final_metadata_path = (
+        assembly.build_final_paths(plan)
+    )
+    assert final_path.is_file()
+    assert final_metadata_path.is_file()
+    final_text = final_path.read_text(
+        encoding="utf-8"
+    )
+    final_metadata = json.loads(
+        final_metadata_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not assembly.review_copy_is_current(
+        plan=plan,
+        base_dir=tmp_path,
+        final_text=final_text,
+        final_metadata=final_metadata,
+    )
+
+
 def test_review_path_cannot_escape_review_root(
     tmp_path: Path,
 ) -> None:

@@ -1031,8 +1031,9 @@ def build_expected_metadata(
     part_number: int,
     total_parts: int,
     strict_validation: bool = False,
+    quality_policy_sha256: str = "",
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "source_file": (
             relative_path.as_posix()
         ),
@@ -1049,6 +1050,13 @@ def build_expected_metadata(
         "strict_validation": strict_validation,
         "normalization_policy": NORMALIZATION_POLICY,
     }
+
+    if quality_policy_sha256:
+        metadata["quality_policy_sha256"] = (
+            quality_policy_sha256
+        )
+
+    return metadata
 
 
 def build_output_metadata(
@@ -1119,6 +1127,9 @@ def is_completed_chunk(
             if key in {
                 "prompt_sha256",
                 "prompt_identity_version",
+                # 策略变化只要求重新校验和组装，
+                # 不应使已完成的模型响应失效并重复调用 API。
+                "quality_policy_sha256",
             }:
                 continue
             if (

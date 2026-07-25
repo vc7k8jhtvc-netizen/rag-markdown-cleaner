@@ -33,6 +33,7 @@ from .progress import ProgressContext, ProgressReporter
 from .validation import (
     FRONT_MATTER_PATTERN,
     parse_front_matter_with_error,
+    validate_result,
     validate_front_matter_fields,
 )
 
@@ -301,9 +302,9 @@ def _publish_final_output(
         ) from publish_error
 
 
-def _build_review_paths(
+def _build_review_paths_for_base(
     plan: FilePlan,
-    config: RuntimeConfig,
+    base_dir: Path,
 ) -> tuple[Path, Path]:
     """
     为需要人工复核的完整文件创建稳定路径。
@@ -312,7 +313,7 @@ def _build_review_paths(
     避免不同目录中的同名文件发生冲突。
     """
     review_root = (
-        config.base_dir
+        base_dir
         / "review"
     ).resolve()
 
@@ -357,6 +358,70 @@ def _build_review_paths(
         review_document,
         review_report,
     )
+
+
+def _build_review_paths(
+    plan: FilePlan,
+    config: RuntimeConfig,
+) -> tuple[Path, Path]:
+    return _build_review_paths_for_base(
+        plan,
+        config.base_dir,
+    )
+
+
+def review_copy_is_current(
+    plan: FilePlan,
+    base_dir: Path,
+    final_text: str,
+    final_metadata: dict[str, Any],
+) -> bool:
+    """检查 review 副本是否与完整输出 metadata 同步。"""
+    try:
+        review_document, review_report = (
+            _build_review_paths_for_base(
+                plan,
+                base_dir,
+            )
+        )
+        review_required = bool(
+            final_metadata.get(
+                "review_required",
+                False,
+            )
+        )
+
+        if not review_required:
+            return (
+                not review_document.exists()
+                and not review_report.exists()
+            )
+
+        if (
+            not review_document.is_file()
+            or not review_report.is_file()
+        ):
+            return False
+
+        if read_text(review_document) != final_text:
+            return False
+
+        report = json.loads(
+            read_text(review_report)
+        )
+        if not isinstance(report, dict):
+            return False
+
+        return (
+            report.get("status")
+            == "review_required"
+            and report.get("source_file")
+            == plan.relative_path.as_posix()
+            and report.get("output_sha256")
+            == final_metadata.get("output_sha256")
+        )
+    except Exception:
+        return False
 
 
 def _remove_review_copy(
@@ -600,6 +665,9 @@ def assemble_completed_file(
             part_number=part_number,
             total_parts=total_parts,
             strict_validation=config.strict_validation,
+            quality_policy_sha256=(
+                config.quality_policy_sha256
+            ),
         )
 
         if not is_completed_chunk(
@@ -625,6 +693,64 @@ def assemble_completed_file(
         metadata = _read_part_metadata(
             metadata_path
         )
+
+        if (
+            config.quality_policy_sha256
+            and metadata.get(
+                "quality_policy_sha256"
+            )
+            != config.quality_policy_sha256
+        ):
+            (
+                validation_errors,
+                validation_warnings,
+            ) = validate_result(
+                result=part_text,
+                input_chunk=chunk,
+                strict_validation=(
+                    config.strict_validation
+                ),
+                part_number=part_number,
+            )
+            if validation_errors:
+                raise RuntimeError(
+                    "缓存分片重新校验失败："
+                    + "；".join(
+                        validation_errors
+                    )
+                )
+
+            part_quality = assess_quality(
+                input_text=chunk,
+                output_text=part_text,
+            )
+            if part_quality.severe_errors:
+                raise RuntimeError(
+                    "缓存分片质量检查失败："
+                    + "；".join(
+                        part_quality.severe_errors
+                    )
+                )
+
+            metadata["warnings"] = list(
+                dict.fromkeys(
+                    validation_warnings
+                    + part_quality.warnings
+                )
+            )
+            metadata["review_required"] = (
+                part_quality.review_required
+            )
+            metadata["quality"] = (
+                part_quality.to_dict()
+            )
+            metadata["quality_policy_sha256"] = (
+                config.quality_policy_sha256
+            )
+            atomic_write_json(
+                metadata_path,
+                metadata,
+            )
 
         if part_number > 1:
             part_text = _remove_front_matter(
@@ -749,6 +875,11 @@ def assemble_completed_file(
         ),
     )
 
+    if config.quality_policy_sha256:
+        final_metadata["quality_policy_sha256"] = (
+            config.quality_policy_sha256
+        )
+
     # --------------------------------------------------------
     # 所有检查通过后安全发布。
     # --------------------------------------------------------
@@ -773,7 +904,7 @@ def assemble_completed_file(
     # --------------------------------------------------------
     # 同步人工复核副本。
     #
-    # 复核副本失败不会影响正式完整文件。
+    # 复核副本失败时，文件不能被视为处理成功。
     # --------------------------------------------------------
 
     try:
@@ -798,7 +929,7 @@ def assemble_completed_file(
             else:
                 reporter.notice(f"人工复核副本已复制到：{display_path}")
 
-    except Exception:
+    except Exception as exc:
         if reporter is not None and context is not None:
             reporter.file_event(
                 context,
@@ -807,6 +938,10 @@ def assemble_completed_file(
             )
         elif reporter is not None:
             reporter.notice("无法同步 review 副本")
+
+        raise RuntimeError(
+            "无法同步 review 副本，完整文件未视为成功"
+        ) from exc
 
     if quality.review_required:
         if reporter is not None and context is not None:

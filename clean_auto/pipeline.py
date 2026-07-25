@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .api_client import ApiClient
+from .assembly import review_copy_is_current
 from .batch_manifest import (
     create_manifest,
     create_retry_manifest,
@@ -78,6 +79,8 @@ def final_output_is_current(
     base_url: str,
     strict_validation: bool = False,
     prompt_sha256_aliases: tuple[str, ...] = (),
+    quality_policy_sha256: str = "",
+    base_dir: Path | None = None,
 ) -> bool:
     """
     检查完整合并文件和 metadata 是否存在且对应当前分片计划。
@@ -139,6 +142,11 @@ def final_output_is_current(
             "normalization_policy": "preserve-outer-fence-v1",
         }
 
+        if quality_policy_sha256:
+            expected_values["quality_policy_sha256"] = (
+                quality_policy_sha256
+            )
+
         if not prompt_metadata_matches(
             metadata,
             prompt_sha256,
@@ -160,10 +168,21 @@ def final_output_is_current(
             ):
                 return False
 
-        return (
+        if (
             metadata.get("output_sha256")
-            == sha256_text(final_text)
-        )
+            != sha256_text(final_text)
+        ):
+            return False
+
+        if base_dir is not None:
+            return review_copy_is_current(
+                plan=plan,
+                base_dir=base_dir,
+                final_text=final_text,
+                final_metadata=metadata,
+            )
+
+        return True
 
     except Exception:
         return False
@@ -176,6 +195,8 @@ def plan_needs_processing(
     base_url: str,
     strict_validation: bool = False,
     prompt_sha256_aliases: tuple[str, ...] = (),
+    quality_policy_sha256: str = "",
+    base_dir: Path | None = None,
 ) -> bool:
     """
     判断文件是否需要进入处理流程。
@@ -208,6 +229,10 @@ def plan_needs_processing(
         prompt_sha256_aliases=(
             prompt_sha256_aliases
         ),
+        quality_policy_sha256=(
+            quality_policy_sha256
+        ),
+        base_dir=base_dir,
     )
 
 
@@ -666,6 +691,10 @@ def main(
                     prompt_sha256_aliases=(
                         config.prompt_sha256_aliases
                     ),
+                    quality_policy_sha256=(
+                        config.quality_policy_sha256
+                    ),
+                    base_dir=config.base_dir,
                 ):
                     pending_plans.append(plan)
                     continue

@@ -80,6 +80,8 @@ def write_valid_final_output(
     model: str,
     base_url: str,
     strict_validation: bool = False,
+    quality_policy_sha256: str = "",
+    review_required: bool = False,
 ) -> tuple[Path, Path]:
     """
     写入一组符合当前完整文件 metadata 规则的测试数据。
@@ -133,10 +135,16 @@ def write_valid_final_output(
         ),
         "strict_validation": strict_validation,
         "normalization_policy": "preserve-outer-fence-v1",
+        "review_required": review_required,
         "output_sha256": sha256_text(
             final_text
         ),
     }
+
+    if quality_policy_sha256:
+        metadata["quality_policy_sha256"] = (
+            quality_policy_sha256
+        )
 
     metadata_path.write_text(
         json.dumps(
@@ -289,6 +297,54 @@ def test_strict_mode_does_not_reuse_lenient_final_cache(
         model="test-model",
         base_url="https://example.com/v1",
         strict_validation=True,
+    )
+
+
+def test_quality_policy_change_requires_reassembly(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    plan = make_plan(tmp_path)
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        quality_policy_sha256="old-policy",
+    )
+    disable_pending_chunk_check(monkeypatch)
+
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        quality_policy_sha256="new-policy",
+    )
+
+
+def test_missing_required_review_copy_requires_reassembly(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    plan = make_plan(tmp_path)
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        quality_policy_sha256="quality-policy",
+        review_required=True,
+    )
+    disable_pending_chunk_check(monkeypatch)
+
+    assert pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256="prompt-hash",
+        model="test-model",
+        base_url="https://example.com/v1",
+        quality_policy_sha256="quality-policy",
+        base_dir=tmp_path,
     )
 
 

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
+
+
+QUALITY_POLICY_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,26 @@ def load_quality_thresholds() -> QualityThresholds:
         )
 
     return thresholds
+
+
+def build_quality_policy_sha256(
+    thresholds: QualityThresholds | None = None,
+) -> str:
+    """生成可写入缓存 metadata 的稳定质量策略指纹。"""
+    selected = thresholds or load_quality_thresholds()
+    policy = {
+        "version": QUALITY_POLICY_VERSION,
+        **asdict(selected),
+    }
+    serialized = json.dumps(
+        policy,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(
+        serialized.encode("utf-8")
+    ).hexdigest()
 
 
 def clear_quality_threshold_cache() -> None:

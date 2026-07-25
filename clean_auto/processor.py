@@ -423,6 +423,9 @@ def process_file(
             part_number=part_number,
             total_parts=total_parts,
             strict_validation=config.strict_validation,
+            quality_policy_sha256=(
+                config.quality_policy_sha256
+            ),
         )
 
         # ----------------------------------------------------

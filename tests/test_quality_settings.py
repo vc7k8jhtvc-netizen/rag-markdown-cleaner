@@ -7,6 +7,7 @@ from clean_auto.quality import (
     find_added_urls,
 )
 from clean_auto.quality_settings import (
+    build_quality_policy_sha256,
     clear_quality_threshold_cache,
     load_quality_thresholds,
 )
@@ -133,6 +134,23 @@ def test_cache_can_be_explicitly_cleared(
         second.severe_min_retained_ratio
         == 0.10
     )
+
+
+def test_quality_policy_sha256_changes_with_thresholds(
+    monkeypatch,
+) -> None:
+    original = build_quality_policy_sha256()
+
+    monkeypatch.setenv(
+        "QUALITY_REVIEW_MIN_RETAINED_RATIO",
+        "0.80",
+    )
+    clear_quality_threshold_cache()
+
+    changed = build_quality_policy_sha256()
+
+    assert len(original) == 64
+    assert changed != original
 
 
 def test_custom_retention_threshold_is_used(
