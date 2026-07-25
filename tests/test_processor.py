@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -547,3 +549,109 @@ def test_strict_mode_does_not_reuse_lenient_chunk_cache(
     assert len(client.calls) == 1
     assert outcome.stats.skipped_parts == 0
     assert outcome.stats.success_parts == 1
+
+
+class ConcurrentFakeClient:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[int] = []
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
+
+    def stream_request(self, **kwargs: object) -> RequestResult:
+        part_number = int(kwargs["part_number"])
+        reporter = kwargs.get("reporter")
+        context = kwargs.get("context")
+        if isinstance(reporter, ProgressReporter) and context is not None:
+            reporter.file_event(context, "chunk_started")
+        with self._lock:
+            self.calls.append(part_number)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.03)
+            if self.fail:
+                raise RuntimeError(f"part {part_number} failed")
+            return RequestResult(
+                text=f"cleaned-{part_number}",
+                elapsed_seconds=0.03,
+                received_events=1,
+                received_chars=10,
+            )
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def test_workers_process_one_file_chunks_concurrently_and_assemble_in_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, [f"source-{index}" for index in range(5)])
+    config = _make_config(tmp_path)
+    config.workers = 3
+    client = ConcurrentFakeClient()
+    reporter = ProgressReporter()
+    _patch_successful_checks(monkeypatch)
+    assembled: list[list[str]] = []
+
+    def fake_assemble(plan: FilePlan, config: RuntimeConfig, **_kwargs: object) -> None:
+        del config
+        assembled.append(
+            [
+                get_chunk_paths(plan.output_dir, plan.source_path, part)[0].read_text(
+                    encoding="utf-8"
+                )
+                for part in range(1, len(plan.chunks) + 1)
+            ]
+        )
+
+    monkeypatch.setattr(processor, "assemble_completed_file", fake_assemble)
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+        reporter=reporter,
+    )
+
+    assert client.max_active == 3
+    assert sorted(client.calls) == [1, 2, 3, 4, 5]
+    assert outcome.stats.success_parts == 5
+    assert outcome.stats.failed_parts == 0
+    assert assembled == [[f"cleaned-{index}" for index in range(1, 6)]]
+    started_parts = {
+        event.part_number
+        for event in reporter.drain()
+        if event.kind == "chunk_started"
+    }
+    assert started_parts == {1, 2, 3, 4, 5}
+
+
+def test_workers_stop_submitting_chunks_after_consecutive_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, [f"source-{index}" for index in range(8)])
+    config = _make_config(tmp_path)
+    config.workers = 2
+    client = ConcurrentFakeClient(fail=True)
+    monkeypatch.setattr(processor, "assemble_completed_file", lambda **_kwargs: None)
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    assert outcome.stopped
+    assert outcome.stats.failed_parts >= MAX_CONSECUTIVE_FAILURES
+    assert len(client.calls) < len(plan.chunks)
+    assert client.max_active <= config.workers

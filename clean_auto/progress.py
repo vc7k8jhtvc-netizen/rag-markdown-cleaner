@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ ProgressKind = Literal[
     "resumed",
     "quality_warning",
     "detail",
+    "stream_progress",
     "batch_progress",
     "notice",
 ]
@@ -51,6 +53,7 @@ class ProgressEvent:
     max_attempts: int | None = None
     wait_seconds: float | None = None
     counts: dict[str, int] | None = None
+    received_bytes: int | None = None
 
 
 def _file_detail(event: ProgressEvent, message: str) -> str:
@@ -64,17 +67,33 @@ def _format_seconds(seconds: float | None) -> str:
     return f"{value:g}"
 
 
+def format_received_bytes(value: int | None) -> str:
+    """Format streamed response size for the human-facing progress line."""
+    size = max(0, int(value or 0))
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 def format_progress_event(event: ProgressEvent) -> str:
     if event.kind == "batch_progress":
         if event.counts is None:
             raise RuntimeError("批次进度事件缺少状态计数")
         counts = event.counts
+        total = counts.get("total", 0)
         completed = sum(
             counts.get(status, 0)
             for status in ("succeeded", "skipped", "failed", "interrupted")
         )
+        percentage = (
+            completed * 100 // total
+            if total > 0
+            else 100
+        )
         return (
-            f"批次进度：已完成 {completed}/{counts.get('total', 0)}｜"
+            f"批次进度：已完成 {completed}/{total}（{percentage}%）｜"
             f"成功 {counts.get('succeeded', 0)}｜"
             f"跳过 {counts.get('skipped', 0)}｜"
             f"失败 {counts.get('failed', 0)}｜"
@@ -122,14 +141,29 @@ def format_progress_event(event: ProgressEvent) -> str:
         return f"{prefix}质量提示：{path}（{_file_detail(event, event.message or '需要人工复核')}）"
     if event.kind == "detail":
         return f"{prefix}处理提示：{path}（{_file_detail(event, event.message or '')}）"
+    if event.kind == "stream_progress":
+        message = event.message or (
+            f"已接收 {format_received_bytes(event.received_bytes)}"
+        )
+        return f"{prefix}接收中：{path}（{_file_detail(event, message)}）"
     if event.kind == "completed":
-        return f"{prefix}处理完成：{path}"
+        percentage = event.file_index * 100 // event.total_files
+        return f"{prefix}处理完成：{path}｜总体进度 {percentage}%"
     if event.kind == "skipped":
-        return f"{prefix}跳过缓存：{path}"
+        percentage = event.file_index * 100 // event.total_files
+        return f"{prefix}跳过缓存：{path}｜总体进度 {percentage}%"
     if event.kind == "failed":
-        return f"{prefix}处理失败：{path}（错误：{event.error or '未知错误'}）"
+        percentage = event.file_index * 100 // event.total_files
+        return (
+            f"{prefix}处理失败：{path}（错误：{event.error or '未知错误'}）"
+            f"｜总体进度 {percentage}%"
+        )
     if event.kind == "interrupted":
-        return f"{prefix}已中断：{path}（原因：{event.error or '安全停止'}）"
+        percentage = event.file_index * 100 // event.total_files
+        return (
+            f"{prefix}已中断：{path}（原因：{event.error or '安全停止'}）"
+            f"｜总体进度 {percentage}%"
+        )
     raise RuntimeError(f"未知进度事件类型：{event.kind}")
 
 
@@ -170,6 +204,7 @@ class ProgressReporter:
         attempt: int | None = None,
         max_attempts: int | None = None,
         wait_seconds: float | None = None,
+        received_bytes: int | None = None,
     ) -> None:
         self.emit(
             ProgressEvent(
@@ -184,6 +219,7 @@ class ProgressReporter:
                 attempt=attempt,
                 max_attempts=max_attempts,
                 wait_seconds=wait_seconds,
+                received_bytes=received_bytes,
             )
         )
 
@@ -210,17 +246,140 @@ class ProgressConsole:
 
     def __init__(self, reporter: ProgressReporter) -> None:
         self._reporter = reporter
+        self._live_lines: dict[tuple[int, str, int | None], str] = {}
+        self._rendered_live_lines = 0
+        self._virtual_terminal_enabled: bool | None = None
+
+    @staticmethod
+    def _safe_text(text: str, stream: object) -> str:
+        encoding = getattr(stream, "encoding", None)
+        if not encoding:
+            return text
+        return text.encode(
+            encoding,
+            errors="backslashreplace",
+        ).decode(encoding)
+
+    def _supports_dashboard(self, stream: object) -> bool:
+        isatty = getattr(stream, "isatty", None)
+        if not callable(isatty) or not isatty():
+            return False
+        if os.name != "nt":
+            return True
+        if self._virtual_terminal_enabled is not None:
+            return self._virtual_terminal_enabled
+
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)
+            mode = ctypes.c_uint()
+            enabled = bool(
+                kernel32.GetConsoleMode(
+                    handle,
+                    ctypes.byref(mode),
+                )
+                and kernel32.SetConsoleMode(
+                    handle,
+                    mode.value | 0x0004,
+                )
+            )
+        except (AttributeError, OSError):
+            enabled = False
+
+        self._virtual_terminal_enabled = enabled
+        return enabled
+
+    @staticmethod
+    def _event_key(
+        event: ProgressEvent,
+    ) -> tuple[int, str, int | None] | None:
+        if event.file_index is None or event.relative_path is None:
+            return None
+        return (
+            event.file_index,
+            event.relative_path.as_posix(),
+            event.part_number,
+        )
+
+    def _remove_finished_live_lines(
+        self,
+        event: ProgressEvent,
+    ) -> None:
+        key = self._event_key(event)
+        if key is None:
+            return
+        file_index, path, part_number = key
+        if part_number is not None:
+            self._live_lines.pop(key, None)
+            return
+        self._live_lines = {
+            live_key: text
+            for live_key, text in self._live_lines.items()
+            if live_key[:2] != (file_index, path)
+        }
+
+    def _redraw_dashboard(self, stream: object) -> None:
+        lines = list(self._live_lines.values())
+        old_count = self._rendered_live_lines
+        new_count = len(lines)
+
+        if old_count > 0:
+            stream.write(f"\x1b[{old_count}A")
+
+        row_count = max(old_count, new_count)
+        for index in range(row_count):
+            stream.write("\r\x1b[2K")
+            if index < new_count:
+                stream.write(lines[index])
+            stream.write("\n")
+
+        cleared_rows = row_count - new_count
+        if cleared_rows > 0:
+            stream.write(f"\x1b[{cleared_rows}A")
+
+        self._rendered_live_lines = new_count
+
+    def _erase_dashboard(self, stream: object) -> None:
+        count = self._rendered_live_lines
+        if count <= 0:
+            return
+        stream.write(f"\x1b[{count}A")
+        for _ in range(count):
+            stream.write("\r\x1b[2K\n")
+        stream.write(f"\x1b[{count}A")
+        self._rendered_live_lines = 0
 
     def write_event(self, event: ProgressEvent) -> None:
-        text = format_progress_event(event)
         stream = sys.stdout
-        encoding = getattr(stream, "encoding", None)
-        if encoding:
-            text = text.encode(
-                encoding,
-                errors="backslashreplace",
-            ).decode(encoding)
+        text = self._safe_text(
+            format_progress_event(event),
+            stream,
+        )
+        dashboard_enabled = self._supports_dashboard(
+            stream
+        )
+
+        if event.kind == "stream_progress":
+            if not dashboard_enabled:
+                stream.write(text + "\n")
+                stream.flush()
+                return
+
+            key = self._event_key(event)
+            if key is not None:
+                self._live_lines[key] = text
+            self._redraw_dashboard(stream)
+            stream.flush()
+            return
+
+        if dashboard_enabled:
+            self._remove_finished_live_lines(event)
+            self._erase_dashboard(stream)
         stream.write(text + "\n")
+        if dashboard_enabled and self._live_lines:
+            self._redraw_dashboard(stream)
         stream.flush()
 
     def drain(self) -> None:

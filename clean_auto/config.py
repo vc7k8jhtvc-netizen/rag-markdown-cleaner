@@ -676,7 +676,7 @@ def parse_args(
         "--workers",
         type=int,
         default=1,
-        help="同时处理的文件数，范围 1-5，默认 1",
+        help="同时处理的清洗任务数，范围 1-5，默认 1",
     )
     parser.add_argument(
         "--pause-between-files",

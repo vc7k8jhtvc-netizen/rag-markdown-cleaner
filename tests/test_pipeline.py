@@ -11,7 +11,6 @@ import pytest
 import clean_auto.assembly as assembly
 import clean_auto.pipeline as pipeline
 import clean_auto.processor as processor
-from clean_auto.api_client import build_user_message
 from clean_auto.chunking import (
     build_file_plan,
     get_chunk_paths,
@@ -854,20 +853,13 @@ def test_crlf_source_runs_through_pipeline_and_cache_contracts(
         max_chars=config.max_chars,
         max_file_size=config.max_file_size,
     )
-    expected_message = build_user_message(
-        chunk=source_text,
-        part_number=1,
-        total_parts=1,
-        relative_path=Path("structured.md"),
-    )
-
     assert crlf_plan.chunks == [source_text]
     assert crlf_plan.source_chars == len(source_text)
     assert crlf_plan.source_sha256 == hashlib.sha256(
         raw_content
     ).hexdigest()
-    assert client.calls[0]["user_message"] == expected_message
     assert source_text in str(client.calls[0]["user_message"])
+    assert "structured.md" not in str(client.calls[0]["user_message"])
     assert assembly_sources == [source_text]
 
     _, chunk_metadata_path, _ = get_chunk_paths(
@@ -955,12 +947,8 @@ def test_crlf_source_runs_through_pipeline_and_cache_contracts(
     assert lf_source_text.replace("\n", "") == (
         source_text.replace("\r\n", "")
     )
-    assert client.calls[-1]["user_message"] == build_user_message(
-        chunk=lf_source_text,
-        part_number=1,
-        total_parts=1,
-        relative_path=Path("structured.md"),
-    )
+    assert lf_source_text in str(client.calls[-1]["user_message"])
+    assert "structured.md" not in str(client.calls[-1]["user_message"])
     assert not pipeline.plan_needs_processing(
         plan=lf_plan,
         prompt_sha256=config.prompt_sha256,
@@ -1012,18 +1000,8 @@ def test_failed_crlf_chunk_is_retried_while_reusing_good_chunk(
     assert "".join(plan.chunks) == source_text
     assert _exit_code(lambda: pipeline.main([])) == 2
     assert len(client.calls) == 2
-    assert client.calls[0]["user_message"] == build_user_message(
-        chunk=plan.chunks[0],
-        part_number=1,
-        total_parts=2,
-        relative_path=plan.relative_path,
-    )
-    assert client.calls[1]["user_message"] == build_user_message(
-        chunk=plan.chunks[1],
-        part_number=2,
-        total_parts=2,
-        relative_path=plan.relative_path,
-    )
+    assert plan.chunks[0] in str(client.calls[0]["user_message"])
+    assert plan.chunks[1] in str(client.calls[1]["user_message"])
     assert assembly_sources == []
 
     first_output, first_metadata, _ = get_chunk_paths(
@@ -1048,12 +1026,7 @@ def test_failed_crlf_chunk_is_retried_while_reusing_good_chunk(
 
     assert _exit_code(lambda: pipeline.main([])) == 0
     assert len(client.calls) == 3
-    assert client.calls[2]["user_message"] == build_user_message(
-        chunk=plan.chunks[0],
-        part_number=1,
-        total_parts=2,
-        relative_path=plan.relative_path,
-    )
+    assert plan.chunks[0] in str(client.calls[2]["user_message"])
     assert second_output.read_bytes() == cached_output
     assert second_metadata.read_bytes() == cached_metadata
     assert assembly_sources == [source_text]

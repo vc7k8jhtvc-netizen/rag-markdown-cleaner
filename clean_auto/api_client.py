@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import secrets
 import threading
 import time
 from contextlib import contextmanager
@@ -28,7 +29,11 @@ from .config import (
     compact_error,
 )
 from .control import wait_if_paused
-from .progress import ProgressContext, ProgressReporter
+from .progress import (
+    ProgressContext,
+    ProgressReporter,
+    format_received_bytes,
+)
 from .model_budget import (
     ModelBudget,
     apply_output_token_limit,
@@ -49,6 +54,10 @@ MAX_SSE_EVENT_CHARS = 2_000_000
 
 # 错误响应最多读取多少字节。
 MAX_ERROR_BODY_BYTES = 20_000
+
+# Do not print every token-sized SSE event. A half-second update is frequent
+# enough to show that a slow response is still moving without flooding stdout.
+STREAM_PROGRESS_INTERVAL_SECONDS = 0.5
 
 NORMAL_FINISH_REASONS = {
     "stop",
@@ -90,6 +99,13 @@ def build_user_message(
     文件名和分片编号只作为处理上下文，
     不允许模型依据文件名推断 YAML 元数据。
     """
+    # The filename and source text are untrusted. Do not disclose the filename
+    # to the model, and use a fresh delimiter that source text cannot predict.
+    relative_path = Path("not-provided")
+    boundary = secrets.token_hex(16).upper()
+    document_start = f"<UNTRUSTED_DOCUMENT_{boundary}>"
+    document_end = f"</UNTRUSTED_DOCUMENT_{boundary}>"
+
     if part_number == 1:
         front_matter_rules = """
 7. 当前是第 1 个分片，必须尝试输出完整 YAML Front Matter。
@@ -141,11 +157,11 @@ def build_user_message(
 19. 无法确定某段是否属于教材正文时，必须保留，不得猜测删除。
 20. 广告和正文粘连时，只删除能够明确分离的广告部分。
 
-<document-content>
+{document_start}
 
 {chunk}
 
-</document-content>
+{document_end}
 """
 
 
@@ -677,12 +693,15 @@ class ApiClient:
             )
         )
         answer_parts: list[str] = []
+        start_time = time.monotonic()
         received_events = 0
         received_chars = 0
+        received_bytes = 0
+        last_progress_bytes = 0
+        last_progress_at = start_time
         received_done = False
         normal_finish_received = False
         finish_reasons: list[str] = []
-        start_time = time.monotonic()
 
         try:
             with self._network_stream(
@@ -928,6 +947,36 @@ class ApiClient:
                         received_chars += len(
                             content
                         )
+                        received_bytes += len(
+                            content.encode("utf-8")
+                        )
+
+                        now = time.monotonic()
+                        should_report = (
+                            reporter is not None
+                            and context is not None
+                            and (
+                                received_bytes > last_progress_bytes
+                                and (
+                                    now - last_progress_at
+                                    >= STREAM_PROGRESS_INTERVAL_SECONDS
+                                    or received_bytes - last_progress_bytes
+                                    >= 1024
+                                )
+                            )
+                        )
+                        if should_report:
+                            reporter.file_event(
+                                context,
+                                "stream_progress",
+                                message=(
+                                    "已接收 "
+                                    f"{format_received_bytes(received_bytes)}"
+                                ),
+                                received_bytes=received_bytes,
+                            )
+                            last_progress_bytes = received_bytes
+                            last_progress_at = now
 
         except GracefulStop:
             raise
@@ -963,6 +1012,21 @@ class ApiClient:
         result_text = "".join(
             answer_parts
         )
+
+        if (
+            reporter is not None
+            and context is not None
+            and received_bytes > last_progress_bytes
+        ):
+            reporter.file_event(
+                context,
+                "stream_progress",
+                message=(
+                    "已接收 "
+                    f"{format_received_bytes(received_bytes)}"
+                ),
+                received_bytes=received_bytes,
+            )
 
         bad_reasons = [
             reason

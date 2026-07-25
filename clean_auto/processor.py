@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,162 @@ def save_chunk_result(
         raise
 
 
+def _process_file_concurrently(
+    plan: FilePlan,
+    file_index: int,
+    total_files: int,
+    config: RuntimeConfig,
+    client: ApiClient | None,
+    initial_consecutive_failures: int,
+    reporter: ProgressReporter | None,
+) -> ProcessOutcome:
+    """在一个文件内部有界并行处理分片。
+
+    每个 future 只处理一个分片，并复用现有的单分片路径。
+    future 数量始终不超过 workers；多个文件之间的实际 API 请求
+    仍由 ApiClient 的共享 semaphore 统一限制。
+    """
+    stats = ProcessStats(total_parts=len(plan.chunks))
+    consecutive_failures = initial_consecutive_failures
+    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+        return ProcessOutcome(
+            stats=stats,
+            consecutive_failures=consecutive_failures,
+            stopped=True,
+        )
+
+    next_part = 1
+    stopped = False
+    futures: dict[Future[ProcessOutcome], int] = {}
+
+    def submit_available(executor: ThreadPoolExecutor) -> None:
+        nonlocal next_part, stopped
+        while (
+            next_part <= len(plan.chunks)
+            and len(futures) < config.workers
+        ):
+            if config.stop_file.exists():
+                stopped = True
+                return
+            part_number = next_part
+            next_part += 1
+            future = executor.submit(
+                process_file,
+                plan=plan,
+                file_index=file_index,
+                total_files=total_files,
+                config=config,
+                client=client,
+                initial_consecutive_failures=0,
+                reporter=reporter,
+                _part_numbers={part_number},
+                _assemble=False,
+            )
+            futures[future] = part_number
+
+    with ThreadPoolExecutor(
+        max_workers=config.workers,
+        thread_name_prefix="rag-cleaner-chunk",
+    ) as executor:
+        submit_available(executor)
+        while futures:
+            done, _ = wait(
+                futures,
+                timeout=0.1,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                if config.stop_file.exists():
+                    stopped = True
+                if stopped:
+                    for future in list(futures):
+                        future.cancel()
+                continue
+
+            for future in sorted(
+                done,
+                key=lambda item: futures[item],
+            ):
+                futures.pop(future)
+                if future.cancelled():
+                    continue
+                try:
+                    outcome = future.result()
+                except (GracefulStop, KeyboardInterrupt):
+                    stopped = True
+                    continue
+
+                stats.success_parts += outcome.stats.success_parts
+                stats.skipped_parts += outcome.stats.skipped_parts
+                stats.failed_parts += outcome.stats.failed_parts
+
+                if outcome.stats.failed_parts:
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        stopped = True
+                elif outcome.stats.success_parts:
+                    consecutive_failures = 0
+
+                if outcome.stopped:
+                    stopped = True
+
+            if stopped:
+                for future in list(futures):
+                    future.cancel()
+                futures = {
+                    future: part_number
+                    for future, part_number in futures.items()
+                    if not future.cancelled()
+                }
+            else:
+                submit_available(executor)
+
+    if stopped:
+        for future in futures:
+            future.cancel()
+
+    if (
+        not config.dry_run
+        and not stopped
+        and stats.failed_parts == 0
+        and stats.success_parts == stats.total_parts
+    ):
+        try:
+            if reporter is None:
+                assemble_completed_file(plan=plan, config=config)
+            else:
+                assemble_completed_file(
+                    plan=plan,
+                    config=config,
+                    reporter=reporter,
+                    context=ProgressContext(
+                        file_index=file_index,
+                        total_files=total_files,
+                        relative_path=plan.relative_path,
+                    ),
+                )
+        except Exception as exc:
+            stats.failed_parts += 1
+            append_log(
+                config.log_dir,
+                plan.relative_path.as_posix(),
+                "assembly_failed",
+                {
+                    "error": compact_error(exc),
+                    "output_dir": safe_log_path(
+                        plan.output_dir,
+                        config.base_dir,
+                    ),
+                },
+            )
+
+    return ProcessOutcome(
+        stats=stats,
+        consecutive_failures=consecutive_failures,
+        stopped=stopped,
+    )
+
+
 def process_file(
     plan: FilePlan,
     file_index: int,
@@ -166,6 +323,8 @@ def process_file(
     client: ApiClient | None,
     initial_consecutive_failures: int,
     reporter: ProgressReporter | None = None,
+    _part_numbers: set[int] | None = None,
+    _assemble: bool = True,
 ) -> ProcessOutcome:
     """
     处理一个输入文件的全部分片。
@@ -202,6 +361,21 @@ def process_file(
             consecutive_failures=0,
         )
 
+    if (
+        config.workers > 1
+        and _part_numbers is None
+        and len(plan.chunks) > 1
+    ):
+        return _process_file_concurrently(
+            plan=plan,
+            file_index=file_index,
+            total_files=total_files,
+            config=config,
+            client=client,
+            initial_consecutive_failures=initial_consecutive_failures,
+            reporter=reporter,
+        )
+
     plan.output_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -213,6 +387,8 @@ def process_file(
         plan.chunks,
         start=1,
     ):
+        if _part_numbers is not None and part_number not in _part_numbers:
+            continue
         progress_context = ProgressContext(
             file_index=file_index,
             total_files=total_files,
@@ -566,6 +742,8 @@ def process_file(
     # --------------------------------------------------------
 
     if (
+        _assemble
+        and
         stats.failed_parts == 0
         and stats.success_parts
         == stats.total_parts

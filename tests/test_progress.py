@@ -10,6 +10,7 @@ from clean_auto.progress import (
     ProgressConsole,
     ProgressEvent,
     ProgressReporter,
+    format_received_bytes,
     format_progress_event,
 )
 import clean_auto.control as control
@@ -96,16 +97,18 @@ def test_progress_event_formats_complete_chinese_file_lines() -> None:
         "（分片 3/12，需要人工复核）"
     )
     assert format_progress_event(_event("skipped")) == (
-        "[1/3] 跳过缓存：法规/安全生产法.md"
+        "[1/3] 跳过缓存：法规/安全生产法.md｜总体进度 33%"
     )
     assert format_progress_event(_event("completed")) == (
-        "[1/3] 处理完成：法规/安全生产法.md"
+        "[1/3] 处理完成：法规/安全生产法.md｜总体进度 33%"
     )
     assert format_progress_event(_event("failed", error="接口超时")) == (
         "[1/3] 处理失败：法规/安全生产法.md（错误：接口超时）"
+        "｜总体进度 33%"
     )
     assert format_progress_event(_event("interrupted", error="检测到停止文件")) == (
         "[1/3] 已中断：法规/安全生产法.md（原因：检测到停止文件）"
+        "｜总体进度 33%"
     )
 
 
@@ -127,8 +130,79 @@ def test_batch_progress_formats_manifest_counts() -> None:
     )
 
     assert format_progress_event(event) == (
-        "批次进度：已完成 1/10｜成功 1｜跳过 0｜失败 0｜"
+        "批次进度：已完成 1/10（10%）｜成功 1｜跳过 0｜失败 0｜"
         "中断 0｜处理中 2｜待处理 7"
+    )
+
+
+def test_stream_progress_formats_received_size() -> None:
+    event = ProgressEvent(
+        file_index=1,
+        total_files=2,
+        relative_path=Path("资料/安全生产法.md"),
+        kind="stream_progress",
+        part_number=2,
+        total_parts=4,
+        received_bytes=1536,
+    )
+
+    assert format_received_bytes(0) == "0 B"
+    assert format_received_bytes(1536) == "1.5 KB"
+    assert format_progress_event(event) == (
+        "[1/2] 接收中：资料/安全生产法.md"
+        "（分片 2/4，已接收 1.5 KB）"
+    )
+
+
+def test_stream_progress_keeps_one_live_line_per_task(
+    monkeypatch,
+) -> None:
+    class TtyBuffer(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    reporter = ProgressReporter()
+    console = ProgressConsole(reporter)
+    console._virtual_terminal_enabled = True
+    stream = TtyBuffer()
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    for file_index, received_bytes in (
+        (1, 1024),
+        (2, 2048),
+        (1, 3072),
+    ):
+        console.write_event(
+            ProgressEvent(
+                file_index=file_index,
+                total_files=2,
+                relative_path=Path(f"sample-{file_index}.md"),
+                kind="stream_progress",
+                part_number=1,
+                total_parts=1,
+                received_bytes=received_bytes,
+            )
+        )
+
+    console.write_event(
+        ProgressEvent(
+            file_index=1,
+            total_files=2,
+            relative_path=Path("sample-1.md"),
+            kind="chunk_completed",
+            part_number=1,
+            total_parts=1,
+        )
+    )
+
+    output = stream.getvalue()
+    assert "\x1b[" in output
+    assert len(console._live_lines) == 1
+    assert next(iter(console._live_lines))[0] == 2
+    assert "sample-2.md" in next(iter(console._live_lines.values()))
+    assert (
+        "[1/2] 分片完成：sample-1.md（分片 1/1）"
+        in output
     )
 
 
@@ -193,8 +267,8 @@ def test_workers_queue_events_and_only_main_console_writes_stdout(
     console.drain()
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines) == [
-        "[1/2] 处理完成：资料/1.md",
-        "[2/2] 处理完成：资料/2.md",
+        "[1/2] 处理完成：资料/1.md｜总体进度 50%",
+        "[2/2] 处理完成：资料/2.md｜总体进度 100%",
     ]
     assert all("\r" not in line for line in lines)
 

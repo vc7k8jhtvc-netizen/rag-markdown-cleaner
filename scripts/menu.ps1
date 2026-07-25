@@ -111,6 +111,53 @@ function Invoke-Cleaner {
     Pause-Menu
 }
 
+function Test-MenuHasResumableBatch {
+    $batchesDir = Join-Path $BaseDir "logs\batches"
+    $latestPath = Join-Path $batchesDir "latest.json"
+
+    if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $latest = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $batchId = [string]$latest.batch_id
+        if ([string]::IsNullOrWhiteSpace($batchId)) {
+            return $false
+        }
+
+        $manifestPath = Join-Path $batchesDir ($batchId + ".json")
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            return $false
+        }
+
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        foreach ($item in @($manifest.files)) {
+            if ([string]$item.status -in @("pending", "interrupted", "running")) {
+                return $true
+            }
+        }
+    }
+    catch {
+        # 损坏或尚未写完的状态文件不应阻止正常启动全量扫描。
+        return $false
+    }
+
+    return $false
+}
+
+function Invoke-MenuStart {
+    if (Test-MenuHasResumableBatch) {
+        Write-Host "检测到上次未完成任务，正在自动继续..."
+        Invoke-Cleaner -Arguments @("--yes", "--resume-batch", "--workers", "$Workers")
+        return
+    }
+
+    Invoke-Cleaner -Arguments @("--yes", "--workers", "$Workers")
+}
+
 function Open-MenuDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -284,7 +331,7 @@ while ($true) {
     $choice = Read-MenuChoice -Prompt "请输入选项"
     if ($null -eq $choice -or $choice -eq "0") { exit 0 }
     switch ($choice) {
-        "1" { Invoke-Cleaner -Arguments @("--yes", "--workers", "$Workers") }
+        "1" { Invoke-MenuStart }
         "2" { Show-SelectionMenu }
         "3" { Show-RecoveryMenu }
         "4" { Invoke-Cleaner -Arguments @("--batch-status") }

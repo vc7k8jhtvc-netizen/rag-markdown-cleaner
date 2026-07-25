@@ -364,7 +364,7 @@ def test_windows_menu_has_explicit_eof_and_invalid_input_paths() -> None:
 def test_windows_menu_dispatches_exact_choice_values_to_isolated_actions() -> None:
     script = (ROOT / "scripts" / "menu.ps1").read_text(encoding="utf-8-sig")
 
-    assert '"1" { Invoke-Cleaner -Arguments @("--yes", "--workers", "$Workers") }' in script
+    assert '"1" { Invoke-MenuStart }' in script
     assert '"2" { Show-SelectionMenu }' in script
     assert '"3" { Show-RecoveryMenu }' in script
     assert '"4" { Invoke-Cleaner -Arguments @("--batch-status") }' in script
