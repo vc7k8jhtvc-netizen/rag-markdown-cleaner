@@ -11,6 +11,7 @@ from .chunking import (
 )
 from .config import (
     FilePlan,
+    PROMPT_IDENTITY_VERSION,
     RuntimeConfig,
     atomic_write_json,
     atomic_write_text,
@@ -605,6 +606,7 @@ def assemble_completed_file(
             output_path,
             metadata_path,
             expected,
+            config.prompt_sha256_aliases,
         ):
             raise RuntimeError(
                 "无法生成完整文件，"
@@ -712,6 +714,9 @@ def assemble_completed_file(
         ),
         "prompt_sha256": (
             config.prompt_sha256
+        ),
+        "prompt_identity_version": (
+            PROMPT_IDENTITY_VERSION
         ),
         "model": config.model,
         "base_url": (

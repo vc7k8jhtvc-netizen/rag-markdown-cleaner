@@ -17,10 +17,12 @@ from clean_auto.chunking import (
 )
 from clean_auto.config import (
     FilePlan,
+    PROMPT_IDENTITY_VERSION,
     ProcessOutcome,
     ProcessStats,
     RequestResult,
     RuntimeConfig,
+    build_prompt_identity,
     read_text,
     sha256_text,
 )
@@ -824,11 +826,16 @@ def test_crlf_source_runs_through_pipeline_and_cache_contracts(
 
     config = _make_config(tmp_path)
     config.max_chars = 10_000
-    config.system_prompt = read_text(plain_prompt)
-    config.prompt_sha256 = sha256_text(
-        config.system_prompt
+    (
+        config.system_prompt,
+        config.prompt_sha256,
+        config.prompt_sha256_aliases,
+    ) = build_prompt_identity(
+        read_text(plain_prompt)
     )
-    crlf_prompt_sha256 = config.prompt_sha256
+    canonical_prompt_sha256 = (
+        config.prompt_sha256
+    )
     client = RecordingApiClient(
         [
             "Cleaned CRLF source",
@@ -884,38 +891,66 @@ def test_crlf_source_runs_through_pipeline_and_cache_contracts(
         source_text
     )
     assert chunk_metadata["prompt_sha256"] == (
-        crlf_prompt_sha256
+        canonical_prompt_sha256
+    )
+    assert chunk_metadata["prompt_identity_version"] == (
+        PROMPT_IDENTITY_VERSION
     )
     assert final_metadata["source_sha256"] == (
         crlf_plan.source_sha256
     )
     assert final_metadata["prompt_sha256"] == (
-        crlf_prompt_sha256
+        canonical_prompt_sha256
+    )
+    assert final_metadata["prompt_identity_version"] == (
+        PROMPT_IDENTITY_VERSION
     )
     assert not pipeline.plan_needs_processing(
         plan=crlf_plan,
-        prompt_sha256=crlf_prompt_sha256,
+        prompt_sha256=canonical_prompt_sha256,
         model=config.model,
         base_url=config.base_url,
+        prompt_sha256_aliases=(
+            config.prompt_sha256_aliases
+        ),
     )
 
-    config.system_prompt = read_text(bom_prompt)
-    config.prompt_sha256 = sha256_text(
-        config.system_prompt
+    (
+        config.system_prompt,
+        config.prompt_sha256,
+        config.prompt_sha256_aliases,
+    ) = build_prompt_identity(
+        read_text(bom_prompt)
     )
 
-    assert config.system_prompt == prompt_text
-    assert config.prompt_sha256 == crlf_prompt_sha256
+    assert config.system_prompt == lf_prompt_text
+    assert config.prompt_sha256 == canonical_prompt_sha256
     assert _exit_code(lambda: pipeline.main([])) == 0
     assert len(client.calls) == 1
     assert assembly_sources == [source_text]
 
-    config.system_prompt = read_text(lf_prompt)
-    config.prompt_sha256 = sha256_text(
-        config.system_prompt
+    (
+        config.system_prompt,
+        config.prompt_sha256,
+        config.prompt_sha256_aliases,
+    ) = build_prompt_identity(
+        read_text(lf_prompt)
     )
 
-    assert config.prompt_sha256 != crlf_prompt_sha256
+    assert config.prompt_sha256 == canonical_prompt_sha256
+    assert _exit_code(lambda: pipeline.main([])) == 0
+    assert len(client.calls) == 1
+    assert assembly_sources == [source_text]
+
+    (
+        config.system_prompt,
+        config.prompt_sha256,
+        config.prompt_sha256_aliases,
+    ) = build_prompt_identity(
+        lf_prompt_text + "\n新增规则。"
+    )
+
+    assert config.prompt_sha256 != canonical_prompt_sha256
     assert _exit_code(lambda: pipeline.main([])) == 0
     assert len(client.calls) == 2
     assert assembly_sources == [source_text, source_text]

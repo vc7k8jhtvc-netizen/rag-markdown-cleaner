@@ -69,14 +69,14 @@ def _success() -> ProcessOutcome:
     )
 
 
-@pytest.mark.parametrize("value", ["1", "5"])
+@pytest.mark.parametrize("value", ["1", "5", "10"])
 def test_workers_accepts_supported_range(value: str) -> None:
     args = parse_args(["--workers", value])
     validate_args(args)
     assert args.workers == int(value)
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "6", "one"])
+@pytest.mark.parametrize("value", ["0", "-1", "11", "one"])
 def test_workers_rejects_invalid_values(value: str) -> None:
     with pytest.raises((RuntimeError, SystemExit)):
         args = parse_args(["--workers", value])

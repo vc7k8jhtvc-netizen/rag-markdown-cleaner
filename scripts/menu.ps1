@@ -259,9 +259,9 @@ function Show-RecoveryMenu {
 
 function Set-MenuWorkers {
     while ($true) {
-        $choice = Read-MenuChoice -Prompt "请输入同时处理数量（1-5，0 返回）"
+        $choice = Read-MenuChoice -Prompt "请输入同时处理数量（1-10，0 返回）"
         if ($null -eq $choice -or $choice -eq "0") { return }
-        if (Test-MenuChoice -Choice $choice -Allowed @("1", "2", "3", "4", "5")) {
+        if (Test-MenuChoice -Choice $choice -Allowed @("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")) {
             $script:Workers = [int]$choice
             Write-Host "已设置为 $Workers，仅在本次菜单会话有效。"
             Pause-Menu

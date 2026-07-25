@@ -9,6 +9,7 @@ from clean_auto.config import (
     load_runtime_config,
     normalize_base_url,
     parse_args,
+    sha256_text,
 )
 
 
@@ -31,7 +32,13 @@ def test_load_runtime_config_uses_explicit_base_dir(
     config = load_runtime_config(args)
 
     assert config.base_dir == tmp_path.resolve()
-    assert config.system_prompt == "系统提示词\r\n保留换行。"
+    assert config.system_prompt == "系统提示词\n保留换行。"
+    assert config.prompt_sha256 == sha256_text(
+        config.system_prompt
+    )
+    assert sha256_text(
+        "系统提示词\r\n保留换行。"
+    ) in config.prompt_sha256_aliases
     assert prompt_path == config.base_dir / "prompt.md"
 
 
@@ -46,7 +53,10 @@ def test_load_runtime_config_uses_rag_cleaner_home(
     config = load_runtime_config(args)
 
     assert config.base_dir == tmp_path.resolve()
-    assert config.system_prompt == "系统提示词\r\n保留换行。"
+    assert config.system_prompt == "系统提示词\n保留换行。"
+    assert config.prompt_sha256 == sha256_text(
+        config.system_prompt
+    )
 
 
 def test_load_runtime_config_reports_missing_prompt_path(

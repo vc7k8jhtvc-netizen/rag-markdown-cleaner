@@ -433,6 +433,7 @@ def process_file(
             output_path,
             metadata_path,
             expected,
+            config.prompt_sha256_aliases,
         ):
             if reporter is not None:
                 reporter.file_event(progress_context, "chunk_skipped")

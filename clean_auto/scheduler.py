@@ -8,6 +8,7 @@ from typing import Literal
 from .config import (
     FilePlan,
     GracefulStop,
+    MAX_WORKERS,
     ProcessOutcome,
     ProcessStats,
     RuntimeConfig,
@@ -159,8 +160,10 @@ def run_file_scheduler(
     reporter: ProgressReporter | None = None,
     on_progress: Callable[[], None] | None = None,
 ) -> SchedulerSummary:
-    if not 2 <= workers <= 5:
-        raise RuntimeError("并发调度器 workers 必须在 2 到 5 之间")
+    if not 2 <= workers <= MAX_WORKERS:
+        raise RuntimeError(
+            f"并发调度器 workers 必须在 2 到 {MAX_WORKERS} 之间"
+        )
 
     next_index = 0
     submitted = 0

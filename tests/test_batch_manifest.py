@@ -39,7 +39,7 @@ class FakeApiClient:
         return None
 
     def configure_concurrency(self, workers: int) -> None:
-        assert 1 <= workers <= 5
+        assert 1 <= workers <= 10
 
 
 class SimulatedProcessCrash(BaseException):

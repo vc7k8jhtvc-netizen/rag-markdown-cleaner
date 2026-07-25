@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .config import (
+    PROMPT_IDENTITY_VERSION,
     decode_text_bytes,
     FilePlan,
     atomic_write_text,
     now_iso,
+    prompt_metadata_matches,
     read_text,
     safe_name,
     sha256_file,
@@ -1037,6 +1039,9 @@ def build_expected_metadata(
         "source_sha256": source_sha256,
         "chunk_sha256": chunk_sha256,
         "prompt_sha256": prompt_sha256,
+        "prompt_identity_version": (
+            PROMPT_IDENTITY_VERSION
+        ),
         "model": model,
         "base_url": base_url.rstrip("/"),
         "part_number": part_number,
@@ -1065,6 +1070,7 @@ def is_completed_chunk(
     output_path: Path,
     metadata_path: Path,
     expected: dict[str, Any],
+    prompt_sha256_aliases: tuple[str, ...] = (),
 ) -> bool:
     """
     检查输出分片是否真正完成且仍然有效。
@@ -1100,9 +1106,21 @@ def is_completed_chunk(
         if not isinstance(metadata, dict):
             return False
 
+        if not prompt_metadata_matches(
+            metadata,
+            str(expected["prompt_sha256"]),
+            prompt_sha256_aliases,
+        ):
+            return False
+
         for key, expected_value in (
             expected.items()
         ):
+            if key in {
+                "prompt_sha256",
+                "prompt_identity_version",
+            }:
+                continue
             if (
                 metadata.get(key)
                 != expected_value
@@ -1269,6 +1287,7 @@ def plan_has_pending_chunks(
     model: str,
     base_url: str,
     strict_validation: bool = False,
+    prompt_sha256_aliases: tuple[str, ...] = (),
 ) -> bool:
     if plan.is_empty:
         return False
@@ -1305,6 +1324,7 @@ def plan_has_pending_chunks(
             output_path,
             metadata_path,
             expected,
+            prompt_sha256_aliases,
         ):
             return True
 

@@ -13,6 +13,7 @@ from clean_auto.chunking import (
 from clean_auto.config import (
     FilePlan,
     atomic_write_text,
+    build_prompt_identity,
     sha256_text,
 )
 
@@ -437,7 +438,7 @@ def test_real_recovery_accepts_completed_chunks_and_current_final(
     )
 
 
-def test_crlf_recovery_tracks_prompt_and_source_byte_changes(
+def test_crlf_recovery_ignores_prompt_line_endings_but_tracks_source_bytes(
     tmp_path: Path,
 ) -> None:
     input_dir = tmp_path / "input"
@@ -457,12 +458,22 @@ def test_crlf_recovery_tracks_prompt_and_source_byte_changes(
         max_chars=1000,
         max_file_size=100_000,
     )
+    prompt_text = "第一条规则\r\n第二条规则"
+    (
+        _canonical_prompt,
+        canonical_prompt_sha256,
+        prompt_sha256_aliases,
+    ) = build_prompt_identity(
+        prompt_text
+    )
     crlf_prompt_sha256 = sha256_text(
-        "第一条规则\r\n第二条规则"
+        prompt_text
     )
     lf_prompt_sha256 = sha256_text(
         "第一条规则\n第二条规则"
     )
+    assert canonical_prompt_sha256 == lf_prompt_sha256
+    assert crlf_prompt_sha256 in prompt_sha256_aliases
     model = "test-model"
     base_url = "https://example.com/v1"
     write_completed_chunks(
@@ -480,13 +491,20 @@ def test_crlf_recovery_tracks_prompt_and_source_byte_changes(
 
     assert not pipeline.plan_needs_processing(
         plan=plan,
-        prompt_sha256=crlf_prompt_sha256,
+        prompt_sha256=canonical_prompt_sha256,
         model=model,
         base_url=base_url,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
+        ),
+    )
+
+    changed_prompt_sha256 = sha256_text(
+        "第一条规则\n第二条规则已修改"
     )
     assert pipeline.plan_needs_processing(
         plan=plan,
-        prompt_sha256=lf_prompt_sha256,
+        prompt_sha256=changed_prompt_sha256,
         model=model,
         base_url=base_url,
     )
@@ -506,9 +524,69 @@ def test_crlf_recovery_tracks_prompt_and_source_byte_changes(
     assert "".join(lf_plan.chunks) != "".join(plan.chunks)
     assert pipeline.plan_needs_processing(
         plan=lf_plan,
+        prompt_sha256=canonical_prompt_sha256,
+        model=model,
+        base_url=base_url,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
+        ),
+    )
+
+
+def test_mixed_legacy_prompt_line_endings_are_reused(
+    tmp_path: Path,
+) -> None:
+    plan = make_plan(tmp_path)
+    plan.chunks = ["第一片", "第二片"]
+    prompt_text = "第一条规则\r\n第二条规则"
+    (
+        _canonical_prompt,
+        canonical_prompt_sha256,
+        prompt_sha256_aliases,
+    ) = build_prompt_identity(prompt_text)
+    crlf_prompt_sha256 = sha256_text(prompt_text)
+    lf_prompt_sha256 = sha256_text(
+        prompt_text.replace("\r\n", "\n")
+    )
+    model = "test-model"
+    base_url = "https://example.com/v1"
+    completed_paths = write_completed_chunks(
+        plan=plan,
         prompt_sha256=crlf_prompt_sha256,
         model=model,
         base_url=base_url,
+    )
+    second_metadata_path = completed_paths[1][1]
+    second_metadata = json.loads(
+        second_metadata_path.read_text(encoding="utf-8")
+    )
+    second_metadata["prompt_sha256"] = lf_prompt_sha256
+    second_metadata.pop(
+        "prompt_identity_version",
+        None,
+    )
+    second_metadata_path.write_text(
+        json.dumps(
+            second_metadata,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    write_valid_final_output(
+        plan=plan,
+        prompt_sha256=crlf_prompt_sha256,
+        model=model,
+        base_url=base_url,
+    )
+
+    assert not pipeline.plan_needs_processing(
+        plan=plan,
+        prompt_sha256=canonical_prompt_sha256,
+        model=model,
+        base_url=base_url,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
+        ),
     )
 
 

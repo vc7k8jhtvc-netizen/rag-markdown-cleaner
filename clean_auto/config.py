@@ -42,7 +42,8 @@ BATCH_ID_PATTERN = re.compile(
 
 REQUIRE_CONFIRMATION = True
 MIN_WORKERS = 1
-MAX_WORKERS = 5
+MAX_WORKERS = 10
+PROMPT_IDENTITY_VERSION = 2
 
 _LOG_WRITE_LOCK = threading.Lock()
 
@@ -184,6 +185,7 @@ class RuntimeConfig:
     output_dir: Path
     log_dir: Path
     lock_file: Path
+    prompt_sha256_aliases: tuple[str, ...] = ()
     pause_between_files: float = 0.0
     pause_between_chunks: float = 0.0
     pause_after_files: int = 0
@@ -463,6 +465,70 @@ def strip_outer_code_fence(
     )
 
 
+def build_prompt_identity(
+    text: str,
+) -> tuple[str, str, tuple[str, ...]]:
+    """
+    生成跨平台稳定的提示词正文、主指纹和兼容旧指纹。
+
+    提示词中的 CRLF、LF 或单独 CR 只表示文本换行，不应因为
+    操作系统、Git 或编辑器转换而触发整批缓存失效。主指纹始终
+    基于 LF；兼容指纹仅覆盖历史代码可能保存的原始/CRLF 表示。
+    """
+    normalized_text = text.replace(
+        "\r\n",
+        "\n",
+    ).replace(
+        "\r",
+        "\n",
+    )
+    stripped = strip_outer_code_fence(text)
+    canonical = strip_outer_code_fence(
+        normalized_text
+    )
+    canonical_sha256 = sha256_text(canonical)
+    legacy_candidates = (
+        sha256_text(stripped),
+        sha256_text(
+            canonical.replace("\n", "\r\n")
+        ),
+    )
+    aliases = tuple(
+        dict.fromkeys(
+            candidate
+            for candidate in legacy_candidates
+            if candidate != canonical_sha256
+        )
+    )
+    return canonical, canonical_sha256, aliases
+
+
+def prompt_metadata_matches(
+    metadata: dict[str, Any],
+    prompt_sha256: str,
+    prompt_sha256_aliases: tuple[str, ...] = (),
+) -> bool:
+    """兼容校验当前稳定指纹和旧版换行指纹。"""
+    actual_sha256 = metadata.get(
+        "prompt_sha256"
+    )
+    if not isinstance(actual_sha256, str):
+        return False
+    if actual_sha256 not in (
+        prompt_sha256,
+        *prompt_sha256_aliases,
+    ):
+        return False
+
+    identity_version = metadata.get(
+        "prompt_identity_version"
+    )
+    return identity_version in {
+        None,
+        PROMPT_IDENTITY_VERSION,
+    }
+
+
 def safe_name(
     name: str,
     fallback: str = "unnamed",
@@ -676,7 +742,7 @@ def parse_args(
         "--workers",
         type=int,
         default=1,
-        help="同时处理的清洗任务数，范围 1-5，默认 1",
+        help="同时处理的清洗任务数，范围 1-10，默认 1",
     )
     parser.add_argument(
         "--pause-between-files",
@@ -821,7 +887,7 @@ def validate_args(
 
     workers = getattr(args, "workers", 1)
     if not MIN_WORKERS <= workers <= MAX_WORKERS:
-        raise RuntimeError("--workers 必须是 1 到 5 之间的整数")
+        raise RuntimeError("--workers 必须是 1 到 10 之间的整数")
 
     if workers > 1 and getattr(args, "dry_run", False):
         raise RuntimeError("--workers 大于 1 时不能使用 --dry-run")
@@ -955,7 +1021,11 @@ def load_runtime_config(
             DEFAULT_STRICT_VALIDATION
         )
 
-    system_prompt = strip_outer_code_fence(
+    (
+        system_prompt,
+        prompt_sha256,
+        prompt_sha256_aliases,
+    ) = build_prompt_identity(
         read_text(paths["prompt_file"])
     )
 
@@ -982,8 +1052,9 @@ def load_runtime_config(
         base_url=base_url,
         model=model,
         system_prompt=system_prompt,
-        prompt_sha256=sha256_text(
-            system_prompt
+        prompt_sha256=prompt_sha256,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
         ),
         strict_validation=strict_validation,
         max_chars=args.max_chars,

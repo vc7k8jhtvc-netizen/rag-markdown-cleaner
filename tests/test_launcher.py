@@ -373,7 +373,7 @@ def test_windows_menu_dispatches_exact_choice_values_to_isolated_actions() -> No
     assert '"7" { Invoke-Installer }' in script
     assert '"8" { Show-MoreMenu }' in script
     assert "[int]$choice" in script
-    assert "@(\"1\", \"2\", \"3\", \"4\", \"5\")" in script
+    assert "@(\"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"7\", \"8\", \"9\", \"10\")" in script
 
 
 def test_windows_menu_blocks_actions_when_python_preflight_fails() -> None:

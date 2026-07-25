@@ -28,6 +28,7 @@ from .chunking import (
 from .config import (
     MAX_CONSECUTIVE_FAILURES,
     MAX_RETRIES,
+    PROMPT_IDENTITY_VERSION,
     REQUIRE_CONFIRMATION,
     FilePlan,
     GracefulStop,
@@ -38,6 +39,7 @@ from .config import (
     get_paths,
     load_runtime_config,
     parse_args,
+    prompt_metadata_matches,
     read_text,
     safe_name,
     sha256_text,
@@ -75,6 +77,7 @@ def final_output_is_current(
     model: str,
     base_url: str,
     strict_validation: bool = False,
+    prompt_sha256_aliases: tuple[str, ...] = (),
 ) -> bool:
     """
     检查完整合并文件和 metadata 是否存在且对应当前分片计划。
@@ -126,6 +129,9 @@ def final_output_is_current(
             ),
             "source_sha256": plan.source_sha256,
             "prompt_sha256": prompt_sha256,
+            "prompt_identity_version": (
+                PROMPT_IDENTITY_VERSION
+            ),
             "model": model,
             "base_url": base_url.rstrip("/"),
             "part_count": len(plan.chunks),
@@ -133,9 +139,21 @@ def final_output_is_current(
             "normalization_policy": "preserve-outer-fence-v1",
         }
 
+        if not prompt_metadata_matches(
+            metadata,
+            prompt_sha256,
+            prompt_sha256_aliases,
+        ):
+            return False
+
         for key, expected_value in (
             expected_values.items()
         ):
+            if key in {
+                "prompt_sha256",
+                "prompt_identity_version",
+            }:
+                continue
             if (
                 metadata.get(key)
                 != expected_value
@@ -157,6 +175,7 @@ def plan_needs_processing(
     model: str,
     base_url: str,
     strict_validation: bool = False,
+    prompt_sha256_aliases: tuple[str, ...] = (),
 ) -> bool:
     """
     判断文件是否需要进入处理流程。
@@ -174,6 +193,9 @@ def plan_needs_processing(
         model=model,
         base_url=base_url,
         strict_validation=strict_validation,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
+        ),
     ):
         return True
 
@@ -183,6 +205,9 @@ def plan_needs_processing(
         model=model,
         base_url=base_url,
         strict_validation=strict_validation,
+        prompt_sha256_aliases=(
+            prompt_sha256_aliases
+        ),
     )
 
 
@@ -620,6 +645,9 @@ def main(
                         model=config.model,
                         base_url=config.base_url,
                         strict_validation=config.strict_validation,
+                        prompt_sha256_aliases=(
+                            config.prompt_sha256_aliases
+                        ),
                     )
                 )
 
@@ -635,6 +663,9 @@ def main(
                     model=config.model,
                     base_url=config.base_url,
                     strict_validation=config.strict_validation,
+                    prompt_sha256_aliases=(
+                        config.prompt_sha256_aliases
+                    ),
                 ):
                     pending_plans.append(plan)
                     continue

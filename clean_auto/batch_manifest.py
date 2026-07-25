@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import (
     BATCH_ID_PATTERN,
+    MAX_WORKERS,
     atomic_write_json,
     compact_error,
     now_iso,
@@ -307,10 +308,10 @@ def validate_manifest(
     if (
         not isinstance(workers, int)
         or isinstance(workers, bool)
-        or not 1 <= workers <= 5
+        or not 1 <= workers <= MAX_WORKERS
     ):
         raise RuntimeError(
-            "批次 manifest workers 必须是 1 到 5 之间的整数"
+            f"批次 manifest workers 必须是 1 到 {MAX_WORKERS} 之间的整数"
         )
 
     selection = manifest.get("selection")
@@ -450,9 +451,11 @@ def create_manifest(
     if (
         not isinstance(workers, int)
         or isinstance(workers, bool)
-        or not 1 <= workers <= 5
+        or not 1 <= workers <= MAX_WORKERS
     ):
-        raise RuntimeError("批次 workers 必须是 1 到 5 之间的整数")
+        raise RuntimeError(
+            f"批次 workers 必须是 1 到 {MAX_WORKERS} 之间的整数"
+        )
 
     if selection_source not in SELECTION_SOURCES:
         raise RuntimeError(
@@ -837,9 +840,11 @@ def prepare_resume(
         if (
             not isinstance(workers, int)
             or isinstance(workers, bool)
-            or not 1 <= workers <= 5
+            or not 1 <= workers <= MAX_WORKERS
         ):
-            raise RuntimeError("批次 workers 必须是 1 到 5 之间的整数")
+            raise RuntimeError(
+                f"批次 workers 必须是 1 到 {MAX_WORKERS} 之间的整数"
+            )
         manifest["workers"] = workers
     manifest["status"] = "running"
     manifest["completed_at"] = None

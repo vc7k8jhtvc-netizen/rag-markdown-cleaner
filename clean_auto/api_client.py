@@ -16,6 +16,7 @@ import httpx
 from .chunking import save_partial_response
 from .config import (
     CONNECT_TIMEOUT,
+    MAX_WORKERS,
     MAX_RETRIES,
     MAX_RETRY_WAIT_SECONDS,
     POOL_TIMEOUT,
@@ -465,16 +466,18 @@ class ApiClient:
                 pool=POOL_TIMEOUT,
             ),
             limits=httpx.Limits(
-                max_connections=5,
-                max_keepalive_connections=2,
+                max_connections=MAX_WORKERS,
+                max_keepalive_connections=min(2, MAX_WORKERS),
                 keepalive_expiry=30.0,
             ),
             follow_redirects=False,
         )
 
     def configure_concurrency(self, workers: int) -> None:
-        if not 1 <= workers <= 5:
-            raise RuntimeError("API workers 必须在 1 到 5 之间")
+        if not 1 <= workers <= MAX_WORKERS:
+            raise RuntimeError(
+                f"API workers 必须在 1 到 {MAX_WORKERS} 之间"
+            )
         self._request_semaphore = threading.BoundedSemaphore(workers)
 
     def _extend_rate_limit_cooldown(self, seconds: float) -> None:
