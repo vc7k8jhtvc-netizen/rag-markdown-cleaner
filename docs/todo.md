@@ -7,7 +7,7 @@
 - [x] 2026-07-27 完整审查：本机 Python 3.13.14 + `.venv` 已安装声明开发依赖；`ruff check clean_auto tests` 通过；`pytest` 收集并通过 **345** 项。
 - [x] 2026-07-27 完整审查：在临时目录构建包并通过 `twine check`。
 - [x] 2026-07-27：`origin/main` @ `474a48f`（1.8.5）GitHub Actions 为 **success**。
-- [ ] 1.8.6 候选提交 Push 后，确认对应 SHA 的完整 CI 矩阵通过，再创建稳定 Tag。
+- [x] 2026-07-27：1.8.6 候选 `29dfe40` 已 Push；完整 CI 矩阵 **success**；已创建并上传附注 Tag `v1.8.6` 与 GitHub Release。
 
 ## P0：调查已观察到的处理失败
 
@@ -33,8 +33,8 @@
 
 - [ ] 完成 PowerShell 7 语法和人工冒烟测试。
 - [ ] 重新检查 PowerShell 5.1 重定向输出编码（本机 `--help` 在部分控制台出现中文乱码，需区分控制台编码与程序输出）。
-- [x] 远程 CI 矩阵已对 Windows 3.10/3.12/3.14 与 Ubuntu 3.10/3.12 在 `474a48f` 跑通；本地完整审查在 Windows Python 3.13 复验。
-- [ ] 确认 1.8.6 候选 SHA 的完整 CI 矩阵。
+- [x] 远程 CI 矩阵已对 Windows 3.10/3.12/3.14 与 Ubuntu 3.10/3.12 在 `29dfe40`（1.8.6）跑通；本地完整审查在 Windows Python 3.13 复验。
+- [x] 2026-07-27：确认 1.8.6 候选 SHA `29dfe40` 的完整 CI 矩阵通过。
 
 ## P2：可维护性
 
