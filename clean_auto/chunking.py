@@ -51,8 +51,16 @@ BLOCKQUOTE_PATTERN = re.compile(
     r"^ {0,3}>"
 )
 
+BLOCKQUOTE_PREFIX_PATTERN = re.compile(
+    r"^ {0,3}>[ \t]?"
+)
+
 BLANK_BLOCKQUOTE_PATTERN = re.compile(
     r"^ {0,3}>[ \t]*$"
+)
+
+ATX_HEADING_PATTERN = re.compile(
+    r"^ {0,3}#{1,6}(?:[ \t]+|$)"
 )
 
 FRONT_MATTER_OPEN_PATTERN = re.compile(
@@ -205,6 +213,21 @@ def _is_blockquote_line(line: str) -> bool:
 
 def _is_blank_blockquote_line(line: str) -> bool:
     return BLANK_BLOCKQUOTE_PATTERN.fullmatch(
+        _line_content(line)
+    ) is not None
+
+
+def _blockquote_content(line: str) -> str:
+    """Return the source line after its outer blockquote marker."""
+    return BLOCKQUOTE_PREFIX_PATTERN.sub(
+        "",
+        line,
+        count=1,
+    )
+
+
+def _is_atx_heading(line: str) -> bool:
+    return ATX_HEADING_PATTERN.match(
         _line_content(line)
     ) is not None
 
@@ -406,6 +429,7 @@ def _is_structural_start(line: str) -> bool:
             and list_indent <= 3
         )
         or _is_blockquote_line(line)
+        or _is_atx_heading(line)
     )
 
 
@@ -417,6 +441,7 @@ def _consume_blockquote_paragraphs(
     blocks: list[_MarkdownBlock] = []
     paragraph_start = index
     cursor = index
+    open_fence: tuple[str, int] | None = None
 
     while cursor < len(lines):
         current = lines[cursor]
@@ -426,6 +451,23 @@ def _consume_blockquote_paragraphs(
 
         if _is_blockquote_line(current):
             cursor += 1
+            quote_content = _blockquote_content(current)
+
+            if open_fence is not None:
+                marker_char, marker_length = open_fence
+
+                if _is_fence_close(
+                    quote_content,
+                    marker_char,
+                    marker_length,
+                ):
+                    open_fence = None
+
+                continue
+
+            open_fence = _fence_marker(
+                quote_content
+            )
 
             if _is_blank_blockquote_line(current):
                 blocks.append(

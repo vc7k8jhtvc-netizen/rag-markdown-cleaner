@@ -223,6 +223,49 @@ def test_blockquote_prefix_and_indent_are_preserved() -> None:
     assert "  > quoted line\n  > continued quote" in chunks[0]
 
 
+def test_blockquote_fence_is_not_split_at_quoted_blank_line() -> None:
+    """A quoted blank inside a fence is code content, not a safe boundary."""
+    text = (
+        "> ```python\n"
+        "> first_call()\n"
+        ">\n"
+        "> second_call()\n"
+        "> ```\n"
+    )
+
+    blocks = split_by_paragraphs(text)
+
+    assert blocks == [text]
+
+    with pytest.raises(
+        RuntimeError,
+        match="超过单片限制的 Markdown 引用段落",
+    ):
+        create_chunks(text, max_chars=30)
+
+
+def test_heading_after_table_starts_a_new_block_without_blank_line() -> None:
+    """An ATX heading must not make preceding table content indivisible."""
+    table = (
+        "| 名称 | 数值 |\n"
+        "| --- | --- |\n"
+        "| 项目 | 123 |\n"
+    )
+    heading_and_text = (
+        "# 后续标题\n"
+        + "后续正文。" * 20
+        + "\n"
+    )
+    text = table + heading_and_text
+
+    blocks = split_by_paragraphs(text)
+    chunks = create_chunks(text, max_chars=100)
+
+    assert blocks == [table, heading_and_text]
+    assert all(len(chunk) <= 100 for chunk in chunks)
+    assert "".join(chunks) == text
+
+
 def test_multiple_blank_lines_are_preserved() -> None:
     """Regression: consecutive blank lines are source formatting, not disposable gaps."""
     text = "First paragraph.\n\n\nSecond paragraph.\n\n\n"

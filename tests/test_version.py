@@ -5,5 +5,5 @@ import clean_auto
 
 def test_distribution_version_matches_runtime_version() -> None:
     assert version("rag-cleaner") == clean_auto.__version__
-    assert version("rag-cleaner") == "1.8.4"
-    assert clean_auto.__version__ == "1.8.4"
+    assert version("rag-cleaner") == "1.8.5"
+    assert clean_auto.__version__ == "1.8.5"
