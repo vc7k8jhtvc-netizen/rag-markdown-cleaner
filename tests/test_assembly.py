@@ -553,6 +553,89 @@ def test_review_sync_failure_is_not_treated_as_success(
     )
 
 
+def test_review_sync_failure_restores_existing_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the previous review pair when the second write fails."""
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    final_path = tmp_path / "output" / "sample_cleaned.md"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_text("new cleaned", encoding="utf-8")
+    review_document, review_report = assembly._build_review_paths(
+        plan=plan,
+        config=config,
+    )
+    review_document.parent.mkdir(parents=True)
+    review_document.write_text("old cleaned", encoding="utf-8")
+    review_report.write_text("{\"status\": \"old\"}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        assembly,
+        "atomic_write_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("review report write failed")
+        ),
+    )
+
+    with pytest.raises(OSError, match="review report write failed"):
+        assembly.sync_review_copy(
+            plan=plan,
+            config=config,
+            final_path=final_path,
+            final_text="new cleaned",
+            final_metadata={
+                "review_required": True,
+                "source_sha256": plan.source_sha256,
+                "output_sha256": sha256_text("new cleaned"),
+            },
+        )
+
+    assert review_document.read_text(encoding="utf-8") == "old cleaned"
+    assert review_report.read_text(encoding="utf-8") == (
+        "{\"status\": \"old\"}\n"
+    )
+
+
+def test_review_sync_failure_removes_new_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not leave a partial review pair on the first failed sync."""
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    final_path = tmp_path / "output" / "sample_cleaned.md"
+    final_path.parent.mkdir(parents=True)
+    final_path.write_text("new cleaned", encoding="utf-8")
+    review_document, review_report = assembly._build_review_paths(
+        plan=plan,
+        config=config,
+    )
+    monkeypatch.setattr(
+        assembly,
+        "atomic_write_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("review report write failed")
+        ),
+    )
+
+    with pytest.raises(OSError, match="review report write failed"):
+        assembly.sync_review_copy(
+            plan=plan,
+            config=config,
+            final_path=final_path,
+            final_text="new cleaned",
+            final_metadata={
+                "review_required": True,
+                "source_sha256": plan.source_sha256,
+                "output_sha256": sha256_text("new cleaned"),
+            },
+        )
+
+    assert not review_document.exists()
+    assert not review_report.exists()
+
+
 def test_review_path_cannot_escape_review_root(
     tmp_path: Path,
 ) -> None:

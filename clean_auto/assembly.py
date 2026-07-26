@@ -556,6 +556,23 @@ def sync_review_copy(
         ),
     )
 
+    # 保留更新前的内容。两个文件需要成对更新，第二次写入失败时
+    # 必须恢复旧版本，而不能把原本有效的复核材料一并删除。
+    previous_review_document = (
+        review_document.read_text(
+            encoding="utf-8"
+        )
+        if review_document.exists()
+        else None
+    )
+    previous_review_report = (
+        review_report.read_text(
+            encoding="utf-8"
+        )
+        if review_report.exists()
+        else None
+    )
+
     try:
         atomic_write_text(
             review_document,
@@ -568,20 +585,31 @@ def sync_review_copy(
         )
 
     except Exception:
-        # 复核副本必须成对存在。
-        try:
-            review_document.unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
-
-        try:
-            review_report.unlink(
-                missing_ok=True
-            )
-        except OSError:
-            pass
+        # 复核副本必须成对存在。原来存在的文件恢复旧内容，
+        # 只有本次写入新建的文件才允许清理。
+        for path, previous_content in (
+            (
+                review_document,
+                previous_review_document,
+            ),
+            (
+                review_report,
+                previous_review_report,
+            ),
+        ):
+            try:
+                if previous_content is None:
+                    path.unlink(
+                        missing_ok=True
+                    )
+                else:
+                    atomic_write_text(
+                        path,
+                        previous_content,
+                    )
+            except OSError:
+                # 保留原始写入异常；回滚失败时不再尝试删除旧文件。
+                pass
 
         raise
 
