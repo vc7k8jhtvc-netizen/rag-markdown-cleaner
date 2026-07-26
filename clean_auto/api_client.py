@@ -955,20 +955,17 @@ class ApiClient:
                         )
 
                         now = time.monotonic()
-                        should_report = (
+                        if (
                             reporter is not None
                             and context is not None
+                            and received_bytes > last_progress_bytes
                             and (
-                                received_bytes > last_progress_bytes
-                                and (
-                                    now - last_progress_at
-                                    >= STREAM_PROGRESS_INTERVAL_SECONDS
-                                    or received_bytes - last_progress_bytes
-                                    >= 1024
-                                )
+                                now - last_progress_at
+                                >= STREAM_PROGRESS_INTERVAL_SECONDS
+                                or received_bytes - last_progress_bytes
+                                >= 1024
                             )
-                        )
-                        if should_report:
+                        ):
                             reporter.file_event(
                                 context,
                                 "stream_progress",

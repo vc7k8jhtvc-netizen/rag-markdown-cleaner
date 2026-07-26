@@ -388,7 +388,7 @@ def redact_secrets(text: str) -> str:
 
 
 def compact_error(
-    exc: Exception,
+    exc: BaseException,
     limit: int = 2000,
 ) -> str:
     text = redact_secrets(str(exc))

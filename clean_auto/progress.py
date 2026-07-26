@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Literal
+from typing import Literal, TextIO
 
 
 ProgressKind = Literal[
@@ -251,7 +251,7 @@ class ProgressConsole:
         self._virtual_terminal_enabled: bool | None = None
 
     @staticmethod
-    def _safe_text(text: str, stream: object) -> str:
+    def _safe_text(text: str, stream: TextIO) -> str:
         encoding = getattr(stream, "encoding", None)
         if not encoding:
             return text
@@ -260,7 +260,7 @@ class ProgressConsole:
             errors="backslashreplace",
         ).decode(encoding)
 
-    def _supports_dashboard(self, stream: object) -> bool:
+    def _supports_dashboard(self, stream: TextIO) -> bool:
         isatty = getattr(stream, "isatty", None)
         if not callable(isatty) or not isatty():
             return False
@@ -320,7 +320,7 @@ class ProgressConsole:
             if live_key[:2] != (file_index, path)
         }
 
-    def _redraw_dashboard(self, stream: object) -> None:
+    def _redraw_dashboard(self, stream: TextIO) -> None:
         lines = list(self._live_lines.values())
         old_count = self._rendered_live_lines
         new_count = len(lines)
@@ -341,7 +341,7 @@ class ProgressConsole:
 
         self._rendered_live_lines = new_count
 
-    def _erase_dashboard(self, stream: object) -> None:
+    def _erase_dashboard(self, stream: TextIO) -> None:
         count = self._rendered_live_lines
         if count <= 0:
             return

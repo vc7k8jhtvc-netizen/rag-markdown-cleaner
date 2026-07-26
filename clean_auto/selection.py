@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from .chunking import ensure_path_inside, is_cleaned_file
@@ -167,7 +168,7 @@ def load_selection_paths(
 
 
 def resolve_input_paths(
-    raw_paths: list[object],
+    raw_paths: Sequence[object],
     input_dir: Path,
 ) -> list[Path]:
     """Validate input-relative paths without relying on a selection file."""

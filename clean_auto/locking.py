@@ -8,6 +8,15 @@ from pathlib import Path
 from .config import compact_error, now_iso
 
 
+def _parse_pid(value: object) -> int:
+    if not isinstance(value, (str, int, float)):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def process_exists(pid: int) -> bool:
     """
     判断指定 PID 的进程是否仍然存在。
@@ -74,10 +83,7 @@ def read_lock_pid(lock_file: Path) -> int:
     if data is None:
         return 0
 
-    try:
-        return int(data.get("pid", 0))
-    except (TypeError, ValueError):
-        return 0
+    return _parse_pid(data.get("pid", 0))
 
 
 def write_lock(fd: int) -> None:
@@ -186,10 +192,7 @@ def acquire_lock(
             pass
 
     else:
-        try:
-            old_pid = int(lock_data.get("pid", 0))
-        except (TypeError, ValueError):
-            old_pid = 0
+        old_pid = _parse_pid(lock_data.get("pid", 0))
 
         if old_pid > 0 and process_exists(old_pid):
             raise RuntimeError(
