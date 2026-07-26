@@ -16,8 +16,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.3,<10",
-  "ruff>=0.9,<1.0",
+  "pytest>=9.1.1,<10",
+  "ruff>=0.16.0,<1",
+  "basedpyright>=1.39.9,<2",
 ]
 
 [project.scripts]
@@ -40,4 +41,22 @@ select = [
   "F63",
   "F7",
   "F82",
+]
+
+[tool.basedpyright]
+include = ["clean_auto"]
+exclude = [
+  "tests",
+  ".venv",
+  ".venv-python314-backup",
+  ".pytest-tmp",
+  ".pytest-tmp-new",
+]
+pythonVersion = "3.10"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.1.1,<10",
+  "ruff>=0.16.0,<1",
+  "basedpyright>=1.39.9,<2",
 ]
