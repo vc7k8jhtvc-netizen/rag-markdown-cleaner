@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.6] - 2026-07-27
+
+### Fixed
+
+- 修复类型标注与运行时边界处理：异常摘要支持 `BaseException`，锁文件 PID 解析更稳健，进度输出与选择清单参数类型更准确。
+- 理顺流式进度上报条件判断，避免类型检查器误报的同时保持原有节流行为。
+
+### Changed
+
+- 对齐开发依赖声明：`pytest`、`ruff`、`basedpyright` 写入 `pyproject.toml` / `uv.lock`，并同步 `requirements-dev.txt`。
+- 更新 `AGENTS.md` 代理执行策略，便于后续稳定发布与审查流程。
+
 ## [1.8.5] - 2026-07-26
 
 ### Fixed
