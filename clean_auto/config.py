@@ -195,6 +195,7 @@ class RuntimeConfig:
     dry_run: bool = False
     workers: int = 1
     quality_policy_sha256: str = ""
+    accept_failed: bool = False
 
 
 class GracefulStop(Exception):
@@ -715,6 +716,14 @@ def parse_args(
         ),
     )
     parser.add_argument(
+        "--accept-failed",
+        action="store_true",
+        help=(
+            "接受已人工检查的失败候选分片并尝试合成；"
+            "仅使用指纹仍匹配的候选"
+        ),
+    )
+    parser.add_argument(
         "--batch-status",
         action="store_true",
         help="显示 latest 批次的只读状态摘要",
@@ -825,6 +834,16 @@ def validate_args(
         "batch_status",
         False,
     )
+    accept_failed = getattr(
+        args,
+        "accept_failed",
+        False,
+    )
+
+    if accept_failed and not retry_failed:
+        raise RuntimeError(
+            "--accept-failed 必须与 --retry-failed 一起使用"
+        )
 
     if batch_status and any(
         (
@@ -1087,5 +1106,8 @@ def load_runtime_config(
         workers=getattr(args, "workers", 1),
         quality_policy_sha256=(
             quality_policy_sha256
+        ),
+        accept_failed=bool(
+            getattr(args, "accept_failed", False)
         ),
     )

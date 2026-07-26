@@ -11,6 +11,7 @@ from .config import (
     PROMPT_IDENTITY_VERSION,
     decode_text_bytes,
     FilePlan,
+    atomic_write_json,
     atomic_write_text,
     now_iso,
     prompt_metadata_matches,
@@ -1019,6 +1020,42 @@ def get_chunk_paths(
         metadata_path,
         partial_path,
     )
+
+
+def get_failed_chunk_paths(
+    output_dir: Path,
+    source_path: Path,
+    part_number: int,
+) -> tuple[Path, Path]:
+    """返回被校验拒绝的候选分片及其诊断 metadata 路径。"""
+    stem = safe_name(source_path.stem)
+    filename = f"{stem}_part_{part_number:03d}_failed.md"
+    failed_path = output_dir / filename
+    metadata_path = output_dir / f"{filename}.meta.json"
+    return failed_path, metadata_path
+
+
+def save_failed_chunk_result(
+    failed_path: Path,
+    metadata_path: Path,
+    result: str,
+    metadata: dict[str, Any],
+) -> None:
+    """保存被校验拒绝的候选结果，供人工诊断但不作为完成分片。"""
+    atomic_write_text(failed_path, result)
+    atomic_write_json(metadata_path, metadata)
+
+
+def remove_failed_chunk_result(
+    failed_path: Path,
+    metadata_path: Path,
+) -> None:
+    """成功重试后删除对应的旧失败诊断文件。"""
+    for path in (failed_path, metadata_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def build_expected_metadata(

@@ -294,6 +294,7 @@ def test_powershell_menu_preserves_cli_and_selection_contracts() -> None:
     assert "--selection-file" in script
     assert "--resume-batch" in script
     assert "--retry-failed" in script
+    assert "--accept-failed" in script
     assert "--batch-status" in script
     assert "--dry-run" in script
     assert "--max-files" in script

@@ -222,6 +222,15 @@ def test_retry_failed_accepts_workers_and_max_files() -> None:
     assert args.max_files == 10
 
 
+def test_accept_failed_requires_retry_mode() -> None:
+    with pytest.raises(RuntimeError):
+        validate_args(parse_args(["--accept-failed"]))
+
+    args = parse_args(["--retry-failed", "--accept-failed"])
+    validate_args(args)
+    assert args.accept_failed is True
+
+
 def test_generate_batch_id_is_valid_and_unique() -> None:
     first = batch_manifest.generate_batch_id()
     second = batch_manifest.generate_batch_id()

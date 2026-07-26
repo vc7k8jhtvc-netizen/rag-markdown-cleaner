@@ -12,7 +12,9 @@ import clean_auto.processor as processor
 from clean_auto.chunking import (
     build_expected_metadata,
     build_output_metadata,
+    get_failed_chunk_paths,
     get_chunk_paths,
+    is_completed_chunk,
 )
 from clean_auto.config import (
     MAX_CONSECUTIVE_FAILURES,
@@ -388,6 +390,170 @@ def test_any_chunk_failure_prevents_final_assembly(
     assert outcome.stats.success_parts == 1
     assert outcome.stats.failed_parts == 1
     assert not outcome.stopped
+
+
+def test_validation_failure_preserves_candidate_for_diagnosis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    client = FakeClient(["candidate output"])
+    monkeypatch.setattr(
+        processor,
+        "validate_result",
+        lambda **_kwargs: (["结果不完整"], []),
+    )
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    failed_path, failed_metadata_path = get_failed_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    assert outcome.stats.failed_parts == 1
+    assert failed_path.read_text(encoding="utf-8") == "candidate output"
+    metadata = json.loads(
+        failed_metadata_path.read_text(encoding="utf-8")
+    )
+    assert metadata["status"] == "failed"
+    assert metadata["part_number"] == 1
+    assert "结果不完整" in metadata["failure_reason"]
+
+
+def test_successful_retry_removes_previous_failed_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    failed_path, failed_metadata_path = get_failed_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    failed_path.parent.mkdir(parents=True, exist_ok=True)
+    failed_path.write_text("old candidate", encoding="utf-8")
+    failed_metadata_path.write_text("{}", encoding="utf-8")
+    client = FakeClient(["clean output"])
+    _patch_successful_checks(monkeypatch)
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    assert outcome.stats.failed_parts == 0
+    assert not failed_path.exists()
+    assert not failed_metadata_path.exists()
+
+
+def test_accept_failed_candidate_allows_assembly_after_user_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    config.accept_failed = True
+    failed_path, failed_metadata_path = get_failed_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    failed_path.parent.mkdir(parents=True, exist_ok=True)
+    failed_path.write_text("reviewed candidate", encoding="utf-8")
+    expected = processor.build_expected_metadata(
+        relative_path=plan.relative_path,
+        source_sha256=plan.source_sha256,
+        chunk_sha256=sha256_text(plan.chunks[0]),
+        prompt_sha256=config.prompt_sha256,
+        model=config.model,
+        base_url=config.base_url,
+        part_number=1,
+        total_parts=1,
+        strict_validation=config.strict_validation,
+    )
+    failed_metadata_path.write_text(
+        json.dumps(
+            {
+                **expected,
+                "status": "failed",
+                "failure_reason": "输出质量检查失败",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = FakeClient([AssertionError("API must not be called")])
+    assembly_calls: list[object] = []
+    monkeypatch.setattr(
+        processor,
+        "assemble_completed_file",
+        lambda **kwargs: assembly_calls.append(kwargs),
+    )
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    output_path, metadata_path, _ = get_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert outcome.stats.success_parts == 1
+    assert outcome.stats.failed_parts == 0
+    assert assembly_calls
+    assert output_path.read_text(encoding="utf-8") == "reviewed candidate"
+    assert metadata["accepted_failed_candidate"] is True
+    assert is_completed_chunk(output_path, metadata_path, expected)
+    assert not failed_path.exists()
+
+
+def test_accept_failed_never_calls_api_for_missing_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    config.accept_failed = True
+    client = FakeClient([AssertionError("API must not be called")])
+    assembly_calls: list[object] = []
+    monkeypatch.setattr(
+        processor,
+        "assemble_completed_file",
+        lambda **kwargs: assembly_calls.append(kwargs),
+    )
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    assert client.calls == []
+    assert outcome.stats.failed_parts == 1
+    assert assembly_calls == []
 
 
 def test_inherited_failure_count_can_trigger_automatic_stop(

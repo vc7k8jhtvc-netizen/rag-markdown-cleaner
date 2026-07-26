@@ -293,6 +293,7 @@ function Show-MoreMenu {
         Write-Host "4. 打开 logs 文件夹"
         Write-Host "5. 查看批次日志"
         Write-Host "6. 清除暂停和停止标志"
+        Write-Host "7. 接受失败候选并合成"
         Write-Host "0. 返回"
         $choice = Read-MenuChoice -Prompt "请输入选项"
         if ($null -eq $choice -or $choice -eq "0") { return }
@@ -303,6 +304,17 @@ function Show-MoreMenu {
             "4" { Open-MenuDirectory -Path (Join-Path $BaseDir "logs"); return }
             "5" { Open-BatchLog; return }
             "6" { Clear-ControlFlags; return }
+            "7" {
+                Write-Host "请先检查 output 中的 *_failed.md，确认内容无误后再继续。"
+                $confirm = Read-MenuChoice -Prompt "确认接受失败候选并合成？输入 Y 确认"
+                if ($confirm -eq "Y") {
+                    Invoke-Cleaner -Arguments @("--yes", "--retry-failed", "--accept-failed", "--workers", "$Workers")
+                } else {
+                    Write-Host "已取消。"
+                    Pause-Menu
+                }
+                return
+            }
             default { Write-Host "输入无效，未执行操作。"; Pause-Menu }
         }
     }

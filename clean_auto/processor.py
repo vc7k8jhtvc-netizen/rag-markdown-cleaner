@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -14,7 +15,10 @@ from .chunking import (
     build_expected_metadata,
     build_output_metadata,
     get_chunk_paths,
+    get_failed_chunk_paths,
     is_completed_chunk,
+    remove_failed_chunk_result,
+    save_failed_chunk_result,
 )
 from .config import (
     MAX_CONSECUTIVE_FAILURES,
@@ -27,6 +31,7 @@ from .config import (
     atomic_write_json,
     atomic_write_text,
     compact_error,
+    read_text,
     sha256_text,
 )
 from .control import (
@@ -157,6 +162,64 @@ def save_chunk_result(
             metadata_path,
         )
         raise
+
+
+def _promote_failed_candidate(
+    failed_path: Path,
+    failed_metadata_path: Path,
+    output_path: Path,
+    output_metadata_path: Path,
+    expected: dict[str, Any],
+) -> bool:
+    """将当前指纹匹配且已人工确认的失败候选转为完成分片。"""
+    if not failed_path.is_file() or not failed_metadata_path.is_file():
+        return False
+
+    try:
+        result = read_text(failed_path)
+        failed_metadata = json.loads(read_text(failed_metadata_path))
+    except Exception:
+        return False
+
+    if not isinstance(failed_metadata, dict) or not result.strip():
+        return False
+
+    for key, expected_value in expected.items():
+        if failed_metadata.get(key) != expected_value:
+            return False
+
+    metadata = build_output_metadata(
+        expected=expected,
+        result=result,
+        warnings=["用户确认使用失败候选"],
+    )
+    metadata["version"] = 2
+    add_schema_identity(
+        metadata=metadata,
+        schema=CHUNK_METADATA_SCHEMA,
+        schema_version=CHUNK_METADATA_SCHEMA_VERSION,
+    )
+    metadata["status"] = "completed"
+    metadata["review_required"] = True
+    metadata["accepted_failed_candidate"] = True
+    metadata["accepted_failed_candidate_at"] = metadata["completed_at"]
+    metadata["failed_candidate_reason"] = failed_metadata.get(
+        "failure_reason",
+        "自动校验失败",
+    )
+    metadata["quality"] = {
+        "severe_errors": [],
+        "warnings": ["用户确认使用失败候选"],
+        "review_required": True,
+        "accepted_failed_candidate": True,
+    }
+    save_chunk_result(
+        output_path=output_path,
+        metadata_path=output_metadata_path,
+        result=result,
+        metadata=metadata,
+    )
+    return True
 
 
 def _process_file_concurrently(
@@ -412,6 +475,11 @@ def process_file(
             plan.source_path,
             part_number,
         )
+        failed_path, failed_metadata_path = get_failed_chunk_paths(
+            plan.output_dir,
+            plan.source_path,
+            part_number,
+        )
 
         expected = build_expected_metadata(
             relative_path=plan.relative_path,
@@ -443,6 +511,69 @@ def process_file(
             stats.success_parts += 1
             stats.skipped_parts += 1
             consecutive_failures = 0
+            remove_failed_chunk_result(
+                failed_path,
+                failed_metadata_path,
+            )
+            continue
+
+        if config.accept_failed and _promote_failed_candidate(
+            failed_path=failed_path,
+            failed_metadata_path=failed_metadata_path,
+            output_path=output_path,
+            output_metadata_path=metadata_path,
+            expected=expected,
+        ):
+            remove_failed_chunk_result(
+                failed_path,
+                failed_metadata_path,
+            )
+            if reporter is not None:
+                reporter.file_event(
+                    progress_context,
+                    "detail",
+                    message="已接受人工确认的失败候选",
+                )
+                reporter.file_event(
+                    progress_context,
+                    "chunk_completed",
+                )
+            stats.success_parts += 1
+            consecutive_failures = 0
+            continue
+
+        if config.accept_failed:
+            message = (
+                "没有找到与当前文件和配置匹配的失败候选，"
+                "本次未调用 API"
+            )
+            stats.failed_parts += 1
+            consecutive_failures += 1
+            if reporter is not None:
+                reporter.file_event(
+                    progress_context,
+                    "chunk_failed",
+                    error=message,
+                )
+            append_log(
+                config.log_dir,
+                plan.relative_path.as_posix(),
+                "failed",
+                {
+                    "part": f"{part_number}/{total_parts}",
+                    "error": message,
+                    "failed_candidate": safe_log_path(
+                        failed_path,
+                        config.base_dir,
+                    ),
+                },
+            )
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                return ProcessOutcome(
+                    stats=stats,
+                    consecutive_failures=consecutive_failures,
+                    stopped=True,
+                )
             continue
 
         # ----------------------------------------------------
@@ -465,6 +596,7 @@ def process_file(
             relative_path=plan.relative_path,
         )
 
+        candidate_result: str | None = None
         try:
             # ------------------------------------------------
             # 调用模型
@@ -494,6 +626,7 @@ def process_file(
             result = remove_outer_code_fence(
                 request_result.text
             )
+            candidate_result = result
 
             # ------------------------------------------------
             # 基础格式校验
@@ -581,6 +714,10 @@ def process_file(
                 metadata_path=metadata_path,
                 result=result,
                 metadata=metadata,
+            )
+            remove_failed_chunk_result(
+                failed_path,
+                failed_metadata_path,
             )
 
             # 正式结果和 metadata 均保存成功后，
@@ -687,6 +824,43 @@ def process_file(
                 if partial_path.exists()
                 else None
             )
+            failed_log_path = None
+            if candidate_result and candidate_result.strip():
+                try:
+                    save_failed_chunk_result(
+                        failed_path,
+                        failed_metadata_path,
+                        candidate_result,
+                        {
+                            "schema": "rag-cleaner/failed-chunk-metadata",
+                            "version": 1,
+                            **expected,
+                            "status": "failed",
+                            "failure_reason": compact_error(exc),
+                            "output_sha256": sha256_text(candidate_result),
+                            "output_chars": len(candidate_result),
+                        },
+                    )
+                    failed_log_path = safe_log_path(
+                        failed_path,
+                        config.base_dir,
+                    )
+                    if reporter is not None:
+                        reporter.file_event(
+                            progress_context,
+                            "detail",
+                            message=(
+                                "已保存失败候选："
+                                f"{failed_path.name}"
+                            ),
+                        )
+                except Exception:
+                    if reporter is not None:
+                        reporter.file_event(
+                            progress_context,
+                            "detail",
+                            message="保存失败候选结果失败",
+                        )
 
             append_log(
                 config.log_dir,
@@ -702,6 +876,7 @@ def process_file(
                         consecutive_failures
                     ),
                     "partial": partial_log_path,
+                    "failed_candidate": failed_log_path,
                 },
             )
 
