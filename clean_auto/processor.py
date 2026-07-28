@@ -26,6 +26,7 @@ from .config import (
     GracefulStop,
     ProcessOutcome,
     ProcessStats,
+    RequestResult,
     RuntimeConfig,
     append_log,
     atomic_write_json,
@@ -597,6 +598,9 @@ def process_file(
         )
 
         candidate_result: str | None = None
+        request_result: RequestResult | None = None
+        failure_stage = "request"
+        quality_diagnostics: dict[str, Any] | None = None
         try:
             # ------------------------------------------------
             # 调用模型
@@ -632,6 +636,7 @@ def process_file(
             # 基础格式校验
             # ------------------------------------------------
 
+            failure_stage = "validation"
             (
                 errors,
                 validation_warnings,
@@ -654,10 +659,12 @@ def process_file(
             # 教材内容质量检查
             # ------------------------------------------------
 
+            failure_stage = "quality"
             quality = assess_quality(
                 input_text=chunk,
                 output_text=result,
             )
+            quality_diagnostics = quality.to_dict()
 
             if quality.severe_errors:
                 raise RuntimeError(
@@ -700,6 +707,7 @@ def process_file(
             metadata["strict_validation"] = config.strict_validation
             metadata["review_required"] = (
                 quality.review_required
+                or bool(validation_warnings)
             )
             metadata["quality"] = (
                 quality.to_dict()
@@ -709,6 +717,7 @@ def process_file(
             # 保存分片结果
             # ------------------------------------------------
 
+            failure_stage = "persistence"
             save_chunk_result(
                 output_path=output_path,
                 metadata_path=metadata_path,
@@ -827,6 +836,18 @@ def process_file(
             failed_log_path = None
             if candidate_result and candidate_result.strip():
                 try:
+                    request_diagnostics = (
+                        {
+                            "completed": True,
+                            "truncated": request_result.truncated,
+                            "received_events": request_result.received_events,
+                            "received_chars": request_result.received_chars,
+                        }
+                        if request_result is not None
+                        else {
+                            "completed": False,
+                        }
+                    )
                     save_failed_chunk_result(
                         failed_path,
                         failed_metadata_path,
@@ -836,9 +857,13 @@ def process_file(
                             "version": 1,
                             **expected,
                             "status": "failed",
+                            "failure_stage": failure_stage,
                             "failure_reason": compact_error(exc),
+                            "request": request_diagnostics,
+                            "input_chars": len(chunk),
                             "output_sha256": sha256_text(candidate_result),
                             "output_chars": len(candidate_result),
+                            "quality": quality_diagnostics,
                         },
                     )
                     failed_log_path = safe_log_path(
@@ -874,6 +899,24 @@ def process_file(
                     "error": compact_error(exc),
                     "consecutive_failures": (
                         consecutive_failures
+                    ),
+                    "failure_stage": failure_stage,
+                    "response_completed": request_result is not None,
+                    "response_truncated": (
+                        request_result.truncated
+                        if request_result is not None
+                        else None
+                    ),
+                    "input_chars": len(chunk),
+                    "output_chars": (
+                        len(candidate_result)
+                        if candidate_result is not None
+                        else None
+                    ),
+                    "retained_ratio": (
+                        quality_diagnostics.get("retained_ratio")
+                        if quality_diagnostics is not None
+                        else None
                     ),
                     "partial": partial_log_path,
                     "failed_candidate": failed_log_path,

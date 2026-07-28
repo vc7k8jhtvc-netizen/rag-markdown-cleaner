@@ -753,6 +753,62 @@ def test_configured_request_concurrency_never_exceeds_workers(
     assert maximum == 2
 
 
+def test_close_waits_for_active_stream_before_closing_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_model_budget(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(timeout=2)
+        return build_sse_response(request, text="关闭前完成。")
+
+    client = ApiClient(
+        base_url="https://example.com/v1",
+        api_key="test-key",
+        model="test-model",
+    )
+    install_mock_transport(client, handler)
+
+    def request():
+        return client.stream_request(
+            system_prompt="系统提示词",
+            user_message="教材正文",
+            file_index=1,
+            total_files=1,
+            part_number=1,
+            total_parts=1,
+            pause_file=tmp_path / "pause.flag",
+            stop_file=tmp_path / "stop.flag",
+            sleep_fn=lambda *_args: None,
+        )
+
+    def close() -> None:
+        close_started.set()
+        client.close()
+        close_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        request_future = executor.submit(request)
+        assert entered.wait(timeout=2)
+        close_future = executor.submit(close)
+        assert close_started.wait(timeout=2)
+        assert close_finished.wait(timeout=0.1) is False
+
+        release.set()
+
+        assert request_future.result(timeout=2).text == "关闭前完成。"
+        close_future.result(timeout=2)
+        assert close_finished.is_set()
+
+    client.close()
+
+
 def test_shared_rate_limit_cooldown_blocks_until_deadline(
     monkeypatch,
     tmp_path: Path,

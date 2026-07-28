@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 
 
-QUALITY_POLICY_VERSION = 1
+QUALITY_POLICY_VERSION = 2
 
 
 @dataclass(frozen=True)

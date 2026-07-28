@@ -116,7 +116,15 @@ def write_valid_final_output(
 
     metadata = {
         "version": 5,
-        "status": "completed",
+        "status": (
+            "review_required"
+            if review_required
+            else (
+                "approved_for_ingestion"
+                if strict_validation
+                else "processed"
+            )
+        ),
         "source_file": (
             plan.relative_path.as_posix()
         ),

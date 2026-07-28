@@ -175,7 +175,7 @@ def test_custom_retention_threshold_is_used(
 
     quality = assess_quality(
         input_text="教材正文。" * 100,
-        output_text="清洗结果。" * 20,
+        output_text="教材正文。" * 20,
     )
 
     assert quality.severe_errors == []

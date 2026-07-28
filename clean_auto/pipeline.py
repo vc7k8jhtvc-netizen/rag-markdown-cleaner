@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from .api_client import ApiClient
+from .artifact_status import final_artifact_status
 from .assembly import review_copy_is_current
 from .batch_manifest import (
     create_manifest,
@@ -72,6 +74,42 @@ from .scheduler import (
 )
 
 
+def _configure_windows_redirected_stdio() -> None:
+    """
+    让 Windows 原生命令的管道输出与宿主控制台代码页一致。
+
+    Windows PowerShell 5.1 会先按控制台输出代码页把原生命令字节
+    解码成字符串，再由 ``>`` 写入 UTF-16LE 文件。Python 在 stdout
+    是管道时可能选择系统 ANSI 编码，二者不一致就会在重定向前产生乱码。
+    """
+    if os.name != "nt":
+        return
+
+    try:
+        import ctypes
+
+        code_page = int(ctypes.windll.kernel32.GetConsoleOutputCP())
+    except (AttributeError, OSError, ValueError):
+        return
+
+    if code_page <= 0:
+        return
+
+    encoding = f"cp{code_page}"
+    for stream in (sys.stdout, sys.stderr):
+        isatty = getattr(stream, "isatty", None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if (
+            callable(isatty)
+            and isatty()
+        ) or not callable(reconfigure):
+            continue
+        reconfigure(
+            encoding=encoding,
+            errors="backslashreplace",
+        )
+
+
 def final_output_is_current(
     plan: FilePlan,
     prompt_sha256: str,
@@ -118,15 +156,27 @@ def final_output_is_current(
         if not final_text.strip():
             return False
 
-        metadata = json.loads(
+        parsed_metadata = json.loads(
             read_text(metadata_path)
         )
 
-        if not isinstance(metadata, dict):
+        if not isinstance(parsed_metadata, dict):
             return False
+        metadata = cast(
+            dict[str, Any],
+            parsed_metadata,
+        )
+
+        review_required = bool(
+            metadata.get("review_required", False)
+        )
+        expected_status = final_artifact_status(
+            strict_validation=strict_validation,
+            review_required=review_required,
+        )
 
         expected_values = {
-            "status": "completed",
+            "status": expected_status,
             "source_file": (
                 plan.relative_path.as_posix()
             ),
@@ -1349,6 +1399,7 @@ def main(
 def run(
     argv: list[str] | None = None,
 ) -> None:
+    _configure_windows_redirected_stdio()
     try:
         main(argv)
 

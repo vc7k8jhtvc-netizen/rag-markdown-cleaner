@@ -450,6 +450,10 @@ class ApiClient:
         self._cooldown_condition = threading.Condition(threading.RLock())
         self._cooldown_until = 0.0
         self._monotonic: Callable[[], float] = time.monotonic
+        self._lifecycle_condition = threading.Condition(threading.RLock())
+        self._active_streams = 0
+        self._closing = False
+        self._closed = False
 
         # 每个 ApiClient 实例加载一次预算配置。
         self.model_budget: ModelBudget = (
@@ -521,7 +525,13 @@ class ApiClient:
         stop_file: Path | None,
     ) -> Iterator[httpx.Response]:
         self._acquire_request_slot(stop_file)
+        stream_registered = False
         try:
+            with self._lifecycle_condition:
+                if self._closing or self._closed:
+                    raise RuntimeError("API 客户端正在关闭或已经关闭")
+                self._active_streams += 1
+                stream_registered = True
             with self._client.stream(
                 method,
                 url,
@@ -530,10 +540,25 @@ class ApiClient:
             ) as response:
                 yield response
         finally:
+            if stream_registered:
+                with self._lifecycle_condition:
+                    self._active_streams -= 1
+                    if self._active_streams == 0:
+                        self._lifecycle_condition.notify_all()
             self._request_semaphore.release()
 
     def close(self) -> None:
-        self._client.close()
+        with self._lifecycle_condition:
+            if self._closed:
+                return
+            self._closing = True
+            while self._active_streams:
+                self._lifecycle_condition.wait()
+            if self._closed:
+                return
+            self._client.close()
+            self._closed = True
+            self._lifecycle_condition.notify_all()
 
     def __enter__(self) -> "ApiClient":
         return self

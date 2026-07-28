@@ -429,6 +429,77 @@ def test_validation_failure_preserves_candidate_for_diagnosis(
     assert "结果不完整" in metadata["failure_reason"]
 
 
+def test_severe_retention_failure_records_completed_response_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "教材正文" * 100
+    candidate = "过短结果"
+    plan = _make_plan(tmp_path, [source])
+    config = _make_config(tmp_path)
+    client = FakeClient([candidate])
+    monkeypatch.setattr(
+        processor,
+        "validate_result",
+        lambda **_kwargs: ([], []),
+    )
+    monkeypatch.setattr(
+        processor,
+        "assess_quality",
+        lambda **_kwargs: SimpleNamespace(
+            severe_errors=["输出保留比例低于严重阈值 30%"],
+            review_required=True,
+            warnings=[],
+            retained_ratio=0.01,
+            removed_ratio=0.99,
+            to_dict=lambda: {
+                "retained_ratio": 0.01,
+                "removed_ratio": 0.99,
+                "severe_errors": ["输出保留比例低于严重阈值 30%"],
+                "warnings": [],
+                "review_required": True,
+            },
+        ),
+    )
+
+    outcome = processor.process_file(
+        plan=plan,
+        file_index=1,
+        total_files=1,
+        config=config,
+        client=client,
+        initial_consecutive_failures=0,
+    )
+
+    _, failed_metadata_path = get_failed_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    metadata = json.loads(
+        failed_metadata_path.read_text(encoding="utf-8")
+    )
+    log_record = json.loads(
+        (config.log_dir / "batch.jsonl").read_text(encoding="utf-8")
+    )
+
+    assert outcome.stats.failed_parts == 1
+    assert metadata["failure_stage"] == "quality"
+    assert metadata["request"] == {
+        "completed": True,
+        "truncated": False,
+        "received_events": 1,
+        "received_chars": len(candidate),
+    }
+    assert metadata["input_chars"] == len(source)
+    assert metadata["output_chars"] == len(candidate)
+    assert metadata["quality"]["retained_ratio"] == 0.01
+    assert log_record["detail"]["failure_stage"] == "quality"
+    assert log_record["detail"]["response_completed"] is True
+    assert log_record["detail"]["response_truncated"] is False
+    assert log_record["detail"]["retained_ratio"] == 0.01
+
+
 def test_successful_retry_removes_previous_failed_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

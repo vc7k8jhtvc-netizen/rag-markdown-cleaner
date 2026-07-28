@@ -16,6 +16,36 @@ permissions:
   contents: read
 
 jobs:
+  locked:
+    name: Locked dependencies / Python 3.13
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install locked environment tool
+        run: python -m pip install uv==0.11.33
+
+      - name: Sync locked development environment
+        run: uv sync --frozen --group dev
+
+      - name: Check type warning baseline
+        run: >
+          uv run python scripts/check_type_warning_baseline.py
+          --max-warnings 491
+
+      - name: Check critical Python errors
+        run: uv run ruff check clean_auto tests
+
+      - name: Run tests
+        run: uv run pytest -q
+
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
@@ -72,7 +102,7 @@ jobs:
           cache: pip
 
       - name: Install release validation tools
-        run: python -m pip install --upgrade pip build twine
+        run: python -m pip install pip==26.1.1 build==1.5.0 twine==6.2.0
 
       - name: Build wheel and source distribution
         run: python -m build

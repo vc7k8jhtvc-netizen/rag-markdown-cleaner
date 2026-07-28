@@ -214,6 +214,7 @@ def test_completed_parts_are_assembled_in_order(
     assert metadata["part_count"] == 3
     assert metadata["output_sha256"] == sha256_text(expected_text)
     assert metadata["schema"] == "rag-cleaner/final-metadata"
+    assert metadata["status"] == "processed"
 
 
 def test_quality_check_receives_complete_crlf_source(
@@ -740,6 +741,54 @@ def test_complete_file_warning_does_not_require_review_flag(
 
     lines = [format_progress_event(event) for event in reporter.drain()]
     assert lines == [f"[1/1] 质量提示：sample.md（{warning}）"]
+
+
+def test_part_warning_requires_review_and_blocks_ingestion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan(tmp_path, ["source"])
+    config = _make_config(tmp_path)
+    _write_completed_parts(plan, config, ["cleaned"])
+    _, part_metadata_path, _ = get_chunk_paths(
+        plan.output_dir,
+        plan.source_path,
+        1,
+    )
+    part_metadata = json.loads(
+        part_metadata_path.read_text(encoding="utf-8")
+    )
+    part_metadata["warnings"] = [
+        "没有检测到完整 YAML Front Matter"
+    ]
+    part_metadata_path.write_text(
+        json.dumps(
+            part_metadata,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        assembly,
+        "assess_quality",
+        lambda **_kwargs: _quality_report(),
+    )
+    monkeypatch.setattr(
+        assembly,
+        "sync_review_copy",
+        lambda **_kwargs: None,
+    )
+
+    _, metadata_path = assembly.assemble_completed_file(
+        plan=plan,
+        config=config,
+    )
+
+    metadata = json.loads(
+        metadata_path.read_text(encoding="utf-8")
+    )
+    assert metadata["review_required"] is True
+    assert metadata["status"] == "review_required"
 
 
 def test_review_progress_uses_project_relative_path(

@@ -1,6 +1,13 @@
 # Development Log
 
-## Current State
+> **历史归档说明**
+>
+> 本文件是截至 2026-07-23 的开发过程快照，包含当时的分支、计划、测试数量和“下一步”，
+> 这些内容可能已经过时，不代表当前项目状态。当前实现以源码和可重复验证为准；当前版本
+> 与发布事实查看 `pyproject.toml`、`CHANGELOG.md`，架构和需求查看 `docs/`，当前待办查看
+> `docs/todo.md`。除非明确整理历史，本文件不再作为活动状态页更新。
+
+## Historical State Snapshot
 
 Current branch: `release/v1.7.0`
 

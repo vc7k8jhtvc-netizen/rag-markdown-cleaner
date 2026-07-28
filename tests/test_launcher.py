@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -21,6 +22,45 @@ from clean_auto.selection import (
 
 ROOT = Path(__file__).resolve().parents[1]
 BATCH_ID = "20260723T120000000000Z-0123456789ab"
+
+
+@pytest.mark.skipif(
+    os.name != "nt" or shutil.which("powershell.exe") is None,
+    reason="需要 Windows PowerShell 5.1",
+)
+def test_windows_powershell_51_redirected_help_preserves_chinese(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "help.txt"
+    env = os.environ.copy()
+    env["RAG_TEST_PYTHON"] = sys.executable
+    env["RAG_TEST_OUTPUT"] = str(output_path)
+
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            (
+                "& $env:RAG_TEST_PYTHON -m clean_auto --help "
+                "> $env:RAG_TEST_OUTPUT"
+            ),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    raw = output_path.read_bytes()
+    assert raw.startswith(b"\xff\xfe")
+    text = raw.decode("utf-16")
+    assert "Markdown 批量清洗工具" in text
+    assert "只生成处理计划，不调用 API" in text
 
 
 @pytest.mark.parametrize(

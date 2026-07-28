@@ -51,7 +51,7 @@ _LOG_WRITE_LOCK = threading.Lock()
 
 # 教材清洗默认保留兼容性。
 # 使用 --strict 时，第一片必须有完整 Front Matter。
-DEFAULT_STRICT_VALIDATION = False
+DEFAULT_STRICT_VALIDATION = True
 
 REQUIRED_FRONT_MATTER_FIELDS = (
     "title",
@@ -736,12 +736,12 @@ def parse_args(
     strict_group.add_argument(
         "--strict",
         action="store_true",
-        help="要求第一个分片包含完整 YAML Front Matter",
+        help="要求第一个分片包含完整 YAML Front Matter（默认）",
     )
     strict_group.add_argument(
         "--no-strict",
         action="store_true",
-        help="不强制要求 YAML Front Matter",
+        help="兼容旧输入，不强制要求 YAML Front Matter",
     )
 
     parser.add_argument(

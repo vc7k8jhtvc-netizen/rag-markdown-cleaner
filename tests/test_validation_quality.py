@@ -174,3 +174,117 @@ def test_quality_accepts_similar_normal_content() -> None:
 
     assert quality.severe_errors == []
     assert quality.review_required is False
+
+
+def test_quality_rejects_same_count_replaced_numbers() -> None:
+    input_text = "\n".join(
+        f"第{value}条规定数值{value}。"
+        for value in range(1, 31)
+    )
+    output_text = "\n".join(
+        f"第{value}条规定数值{value}。"
+        for value in range(101, 131)
+    )
+
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert quality.input_numbers == quality.output_numbers
+    assert quality.protected_values_changed
+    assert quality.severe_errors
+    assert quality.review_required
+
+
+def test_quality_rejects_similar_length_body_replacement() -> None:
+    input_text = (
+        "安全生产责任制要求生产经营单位明确岗位职责，"
+        "定期检查风险并记录整改结果。"
+    ) * 12
+    output_text = (
+        "城市园林绿化工作需要合理选择植物品种，"
+        "持续观察生长情况并安排日常养护。"
+    ) * 12
+
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert quality.protected_anchor_ratio < 0.35
+    assert any(
+        "大范围替换" in error
+        for error in quality.severe_errors
+    )
+    assert quality.review_required
+
+
+def test_quality_allows_protected_values_in_removed_ad_line() -> None:
+    input_text = (
+        "安全生产教材正文中的限值为 30%。\n"
+        "扫码关注领取 2025 年课程资料。"
+    )
+    output_text = "安全生产教材正文中的限值为 30%。"
+
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert not quality.protected_values_changed
+    assert quality.severe_errors == []
+
+
+@pytest.mark.parametrize(
+    ("input_text", "output_text"),
+    [
+        ("允许浓度为 30 mg/m³。", "允许浓度为 30 g/m³。"),
+        ("执行标准 GB/T 33000-2016。", "执行标准 AQ/T 33000-2016。"),
+    ],
+)
+def test_quality_rejects_changed_unit_or_standard_id(
+    input_text: str,
+    output_text: str,
+) -> None:
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert quality.protected_values_changed
+    assert quality.severe_errors
+    assert quality.review_required
+
+
+def test_quality_allows_new_first_part_front_matter() -> None:
+    input_text = "# 第一章\n\n教材正文中的限值为 30%。"
+    output_text = (
+        "---\n"
+        "title: 测试教材\n"
+        "year: 2025\n"
+        "---\n\n"
+        "# 第一章\n\n"
+        "教材正文中的限值为 30%。"
+    )
+
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert not quality.protected_values_changed
+    assert quality.severe_errors == []
+
+
+def test_quality_protects_existing_front_matter_values() -> None:
+    input_text = "---\nyear: 2025\n---\n\n教材正文。"
+    output_text = "---\nyear: 2026\n---\n\n教材正文。"
+
+    quality = assess_quality(
+        input_text=input_text,
+        output_text=output_text,
+    )
+
+    assert quality.protected_values_changed
+    assert quality.severe_errors

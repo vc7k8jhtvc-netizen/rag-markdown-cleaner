@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .artifact_status import final_artifact_status
 from .chunking import (
     build_expected_metadata,
     get_chunk_paths,
@@ -768,6 +769,7 @@ def assemble_completed_file(
             )
             metadata["review_required"] = (
                 part_quality.review_required
+                or bool(validation_warnings)
             )
             metadata["quality"] = (
                 part_quality.to_dict()
@@ -838,6 +840,7 @@ def assemble_completed_file(
 
     review_required = (
         quality.review_required
+        or bool(part_warnings)
         or any(
             bool(
                 metadata.get(
@@ -859,7 +862,10 @@ def assemble_completed_file(
     ] = {
         # 保留旧 version 字段，兼容已有结果。
         "version": 6,
-        "status": "completed",
+        "status": final_artifact_status(
+            strict_validation=config.strict_validation,
+            review_required=review_required,
+        ),
         "source_file": (
             plan.relative_path.as_posix()
         ),
