@@ -4,7 +4,7 @@
 
 ## P0：建立可验证基线
 
-- [x] 2026-07-29：准备发布 **1.8.7**；同步运行时、包、README、CHANGELOG 与版本测试。
+- [x] 2026-07-29：1.8.7 候选 `3f255dc` 已同步版本并 Push；本地完整测试、隔离构建、`twine check`、完整 CI 矩阵和用户实际试用通过；已创建并上传附注 Tag `v1.8.7` 与 GitHub Release。
 - [x] 2026-07-27 完整审查：本机 Python 3.13.14 + `.venv` 已安装声明开发依赖；`ruff check clean_auto tests` 通过；`pytest` 收集并通过 **345** 项。
 - [x] 2026-07-27 完整审查：在临时目录构建包并通过 `twine check`。
 - [x] 2026-07-27：`origin/main` @ `474a48f`（1.8.5）GitHub Actions 为 **success**。
